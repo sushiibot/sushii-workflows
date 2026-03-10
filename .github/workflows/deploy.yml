@@ -26,11 +26,6 @@ on:
         required: false
         default: "deploy"
         type: string
-      docker_registry_user:
-        description: "Docker registry username for image pull auth on the server"
-        required: false
-        default: "sushiibot"
-        type: string
     secrets:
       ANSIBLE_REPO_TOKEN:
         required: true
@@ -40,9 +35,6 @@ on:
         required: true
       ANSIBLE_VAULT_PASSWORD:
         required: true
-      GHCR_TOKEN:
-        description: "Token for docker pull auth on the deployment server (optional)"
-        required: false
 
 jobs:
   deploy:
