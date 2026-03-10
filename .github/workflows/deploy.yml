@@ -70,7 +70,7 @@ jobs:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
         run: |
           ansible-playbook playbooks/deploy.yml \
-            --vault-password-file ./vault-env \
+            --vault-id default@./vault-env \
             -l "${{ inputs.host }}" \
             -e "service=${{ inputs.service }}" \
             -e "docker_image_check_version=${{ inputs.image_version }}" \
