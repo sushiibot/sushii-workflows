@@ -1,0 +1,70 @@
+name: Ansible Deploy
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Service path (e.g., modmail/sushii-modmail-staging)"
+        required: true
+        type: string
+      image_version:
+        description: "Docker image tag to deploy"
+        required: true
+        type: string
+      host:
+        description: "Target Ansible host"
+        required: false
+        default: "apps"
+        type: string
+      environment:
+        description: "GitHub environment name for protection rules"
+        required: false
+        default: ""
+        type: string
+      ansible_tags:
+        description: "Ansible tags to run"
+        required: false
+        default: "deploy"
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout sushii-ansible
+        uses: actions/checkout@v4
+        with:
+          repository: sushiibot/sushii-ansible
+          token: ${{ secrets.ANSIBLE_REPO_TOKEN }}
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Install Ansible Galaxy dependencies
+        run: ansible-galaxy install -r requirements.yml
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.KNOWN_HOST }}" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Write vault password file
+        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > ./password
+
+      - name: Remove group vault file
+        run: rm -f inventory/group_vars/all/vault.yml
+
+      - name: Run Ansible deploy
+        run: |
+          ansible-playbook playbooks/deploy.yml \
+            --vault-password-file ./password \
+            -l "${{ inputs.host }}" \
+            -e "service=${{ inputs.service }}" \
+            -e "docker_image_check_version=${{ inputs.image_version }}" \
+            --tags "${{ inputs.ansible_tags }}" \
+            -v
