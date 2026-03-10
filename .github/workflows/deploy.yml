@@ -26,6 +26,23 @@ on:
         required: false
         default: "deploy"
         type: string
+      docker_registry_user:
+        description: "Docker registry username for image pull auth on the server"
+        required: false
+        default: "sushiibot"
+        type: string
+    secrets:
+      ANSIBLE_REPO_TOKEN:
+        required: true
+      ANSIBLE_SSH_PRIVATE_KEY:
+        required: true
+      ANSIBLE_KNOWN_HOSTS:
+        required: true
+      ANSIBLE_VAULT_PASSWORD:
+        required: true
+      GHCR_TOKEN:
+        description: "Token for docker pull auth on the deployment server (optional)"
+        required: false
 
 jobs:
   deploy:
@@ -48,9 +65,9 @@ jobs:
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          echo "${{ secrets.KNOWN_HOST }}" >> ~/.ssh/known_hosts
+          echo "${{ secrets.ANSIBLE_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Write vault password file

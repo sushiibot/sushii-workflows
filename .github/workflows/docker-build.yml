@@ -72,6 +72,9 @@ jobs:
           tags: |
             ${{ inputs.image_name }}:latest
             ${{ inputs.image_name }}:${{ steps.version.outputs.short_sha }}
-          build-args: ${{ inputs.build_args }}
+          build-args: |
+            GIT_HASH=${{ steps.version.outputs.short_sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            ${{ inputs.build_args }}
           cache-from: type=registry,ref=${{ inputs.image_name }}:buildcache
           cache-to: type=registry,ref=${{ inputs.image_name }}:buildcache,mode=max
