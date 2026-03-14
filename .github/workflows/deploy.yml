@@ -68,10 +68,9 @@ jobs:
       - name: Run Ansible deploy
         env:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
-          ANSIBLE_VAULT_IDENTITY_LIST: default@./vault-env
         run: |
           ansible-playbook playbooks/deploy.yml \
-            --vault-id default@./vault-env \
+            --vault-password-file ./vault-env \
             -l "${{ inputs.host }}" \
             -e "service=${{ inputs.service }}" \
             -e "docker_image_check_version=${{ inputs.image_version }}" \
