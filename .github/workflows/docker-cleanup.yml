@@ -1,0 +1,77 @@
+name: Docker Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: "Full image name (e.g., ghcr.io/sushiibot/modmail)"
+        required: true
+        type: string
+      cut_off:
+        description: "Age cutoff for deletion (e.g., 2w, 30d)"
+        required: false
+        default: "2w"
+        type: string
+      keep_n_most_recent:
+        description: "Number of most recent versions to keep regardless of age"
+        required: false
+        default: 5
+        type: number
+      protect_tags:
+        description: "Newline-separated list of tags whose child manifests to protect from deletion"
+        required: false
+        default: "latest"
+        type: string
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Multi-arch builds produce a manifest index (the tag itself) plus one
+      # child package version per platform. The GitHub Packages API returns these
+      # as unrelated entries, so naively age-filtering will delete the
+      # platform-specific layers that the index still references.
+      #
+      # Inspect each protected tag and collect all child manifest digests so
+      # the retention policy never touches them.
+      - name: Collect child digests from protected manifest indexes
+        id: protected
+        env:
+          IMAGE: ${{ inputs.image_name }}
+          PROTECT_TAGS: ${{ inputs.protect_tags }}
+        run: |
+          # Extract the bare image name (everything after ghcr.io/<account>/)
+          # e.g. ghcr.io/sushiibot/modmail -> modmail
+          IMAGE_NAME=$(echo "$IMAGE" | cut -d'/' -f3-)
+          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+          SKIP_SHAS=""
+          while IFS= read -r TAG; do
+            [[ -z "$TAG" ]] && continue
+            SHAS=$(docker manifest inspect "${IMAGE}:${TAG}" \
+              | jq -r '.manifests[].digest' \
+              | paste -s -d ',' -)
+            SKIP_SHAS="${SKIP_SHAS:+${SKIP_SHAS},}${SHAS}"
+          done <<< "$PROTECT_TAGS"
+
+          echo "skip_shas=${SKIP_SHAS}" >> "$GITHUB_OUTPUT"
+
+      - name: Delete old package versions
+        uses: snok/container-retention-policy@v3.0.0
+        with:
+          account: ${{ github.repository_owner }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: ${{ steps.protected.outputs.image_name }}
+          cut-off: ${{ inputs.cut_off }}
+          keep-n-most-recent: ${{ inputs.keep_n_most_recent }}
+          skip-shas: ${{ steps.protected.outputs.skip_shas }}
