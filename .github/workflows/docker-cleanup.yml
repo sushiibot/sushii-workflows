@@ -67,7 +67,7 @@ jobs:
           echo "skip_shas=${SKIP_SHAS}" >> "$GITHUB_OUTPUT"
 
       - name: Delete old package versions
-        uses: snok/container-retention-policy@v3.0.0
+        uses: snok/container-retention-policy@v3.0.1
         with:
           account: ${{ github.repository_owner }}
           token: ${{ secrets.GITHUB_TOKEN }}
