@@ -1,0 +1,83 @@
+name: Blue-Green Deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_version:
+        description: "Short SHA of the Docker image to deploy"
+        required: true
+        type: string
+      environment:
+        description: "GitHub environment name for protection rules"
+        required: false
+        default: "" # Empty string disables the GitHub environment gate
+        type: string
+      dry_run:
+        description: "Print deploy plan without making any changes"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      ANSIBLE_REPO_TOKEN:
+        required: true
+      ANSIBLE_SSH_PRIVATE_KEY:
+        required: true
+      ANSIBLE_KNOWN_HOSTS:
+        required: true
+      ANSIBLE_VAULT_PASSWORD:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout sushii-ansible
+        uses: actions/checkout@v4
+        with:
+          repository: sushiibot/sushii-ansible
+          token: ${{ secrets.ANSIBLE_REPO_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Install Ansible Galaxy dependencies
+        run: ansible-galaxy install -r requirements.yml
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install script dependencies
+        working-directory: scripts
+        run: bun install --frozen-lockfile
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.ANSIBLE_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Remove group vault file
+        # Vault decryption uses ANSIBLE_VAULT_PASSWORD env var via the vault-env shim;
+        # the checked-in encrypted vault.yml is not usable on the runner and must be removed.
+        run: rm -f inventory/group_vars/all/vault.yml
+
+      - name: Run deploy script
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          ARGS="--sha ${{ inputs.image_version }}"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          bun run scripts/deploy-sushii-bot.ts $ARGS
