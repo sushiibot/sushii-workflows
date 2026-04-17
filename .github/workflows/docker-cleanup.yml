@@ -15,7 +15,7 @@ on:
       keep_n_most_recent:
         description: "Number of most recent versions to keep regardless of age"
         required: false
-        default: 5
+        default: 10
         type: number
       protect_tags:
         description: "Newline-separated list of tags whose child manifests to protect from deletion"
