@@ -31,6 +31,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+    permissions:
+      actions: read
+      contents: read
 
     steps:
       - name: Checkout sushii-ansible
@@ -75,6 +78,7 @@ jobs:
       - name: Run deploy script
         env:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ARGS="--sha ${{ inputs.image_version }}"
           if [ "${{ inputs.dry_run }}" = "true" ]; then
