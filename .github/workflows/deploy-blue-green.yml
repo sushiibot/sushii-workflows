@@ -75,6 +75,11 @@ jobs:
         # the checked-in encrypted vault.yml is not usable on the runner and must be removed.
         run: rm -f inventory/group_vars/all/vault.yml
 
+      - name: Pre-deploy summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bun run scripts/deploy-sushii-bot.ts --summary --sha ${{ inputs.image_version }}
+
       - name: Run deploy script
         env:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
