@@ -93,3 +93,29 @@ jobs:
             ARGS="$ARGS --dry-run"
           fi
           bun run scripts/deploy-sushii-bot.ts $ARGS
+
+  mark-deployment-inactive:
+    if: cancelled() && inputs.environment != ''
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const deployments = await github.rest.repos.listDeployments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              environment: '${{ inputs.environment }}',
+            });
+            for (const { id } of deployments.data) {
+              await github.rest.repos.createDeploymentStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                deployment_id: id,
+                state: 'inactive',
+                description: 'Superseded by a newer deployment',
+              });
+            }
