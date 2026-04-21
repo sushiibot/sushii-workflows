@@ -26,6 +26,8 @@ on:
         required: true
       ANSIBLE_VAULT_PASSWORD:
         required: true
+      DISCORD_DEPLOY_WEBHOOK_URL:
+        required: false
 
 jobs:
   deploy:
@@ -84,6 +86,7 @@ jobs:
         env:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
           GH_TOKEN: ${{ github.token }}
+          DISCORD_DEPLOY_WEBHOOK_URL: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
         run: |
           ARGS="--sha ${{ inputs.image_version }}"
           if [ "${{ inputs.dry_run }}" = "true" ]; then
