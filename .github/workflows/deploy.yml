@@ -62,6 +62,21 @@ jobs:
           echo "${{ secrets.ANSIBLE_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      - name: Bump pinned image tag in vars.yml
+        run: ./scripts/bump-image-tag.sh "${{ inputs.service }}" "${{ inputs.image_version }}"
+
+      - name: Commit and push updated vars.yml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add services/ inventory/
+          if git diff --cached --quiet; then
+            echo "No changes — vars.yml already up to date"
+          else
+            git commit -m "chore: bump ${{ inputs.service }} to ${{ inputs.image_version }}"
+            git push
+          fi
+
       - name: Remove group vault file
         run: rm -f inventory/group_vars/all/vault.yml
 
