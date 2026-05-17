@@ -40,6 +40,9 @@ on:
         required: true
       ANSIBLE_VAULT_PASSWORD:
         required: true
+      REGISTRY_TOKEN:
+        description: "Token for ghcr.io login (pass GITHUB_TOKEN from caller)"
+        required: false
 
 jobs:
   deploy:
@@ -95,6 +98,6 @@ jobs:
             -e "service=${{ inputs.service }}" \
             -e "image_version=${{ inputs.image_version }}" \
             -e "docker_image_check_version=${{ inputs.image_version }}" \
-            ${{ inputs.private_registry && format('-e "docker_registry_user={0}" -e "docker_registry_password={1}"', github.repository_owner, secrets.ANSIBLE_REPO_TOKEN) || '' }} \
+            ${{ inputs.private_registry && format('-e "docker_registry_user={0}" -e "docker_registry_password={1}"', github.repository_owner, secrets.REGISTRY_TOKEN) || '' }} \
             --tags "${{ inputs.ansible_tags }}" \
             -v
