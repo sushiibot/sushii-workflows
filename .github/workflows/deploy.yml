@@ -26,6 +26,11 @@ on:
         required: false
         default: "deploy"
         type: string
+      private_registry:
+        description: "Log into ghcr.io before pulling (for private images)"
+        required: false
+        default: false
+        type: boolean
     secrets:
       ANSIBLE_REPO_TOKEN:
         required: true
@@ -90,5 +95,6 @@ jobs:
             -e "service=${{ inputs.service }}" \
             -e "image_version=${{ inputs.image_version }}" \
             -e "docker_image_check_version=${{ inputs.image_version }}" \
+            ${{ inputs.private_registry && format('-e "docker_registry_user={0}" -e "docker_registry_password={1}"', github.repository_owner, secrets.ANSIBLE_REPO_TOKEN) || '' }} \
             --tags "${{ inputs.ansible_tags }}" \
             -v
