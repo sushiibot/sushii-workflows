@@ -35,14 +35,17 @@ jobs:
         env:
           IMAGE: ${{ inputs.image_name }}
         run: |
-          # e.g. ghcr.io/sushiibot/modmail -> modmail
+          # e.g. ghcr.io/sushiibot/modmail -> org=sushiibot, name=modmail
+          IMAGE_ORG=$(echo "$IMAGE" | cut -d'/' -f2)
           IMAGE_NAME=$(echo "$IMAGE" | cut -d'/' -f3-)
+          echo "org_name=${IMAGE_ORG}" >> "$GITHUB_OUTPUT"
           echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Delete old package versions
         uses: snok/container-retention-policy@v2
         with:
           account-type: org
+          org-name: ${{ steps.image.outputs.org_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           image-names: ${{ steps.image.outputs.image_name }}
           cut-off: ${{ inputs.cut_off }}
