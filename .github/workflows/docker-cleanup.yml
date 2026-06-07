@@ -8,11 +8,11 @@ on:
         required: true
         type: string
       cut_off:
-        description: "Age cutoff for deletion with timezone (e.g., 2w UTC, 30d UTC)"
+        description: "Age cutoff for deletion (e.g., 2w, 30d, 1h)"
         required: false
-        default: "2w UTC"
+        default: "2w"
         type: string
-      keep_at_least:
+      keep_n_most_recent:
         description: "Minimum number of versions to keep regardless of age"
         required: false
         default: 10
@@ -58,5 +58,5 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           image-names: ${{ steps.image.outputs.image_name }}
           cut-off: ${{ inputs.cut_off }}
-          keep-at-least: ${{ inputs.keep_at_least }}
+          keep-n-most-recent: ${{ inputs.keep_n_most_recent }}
           image-tags: ${{ steps.image_tags.outputs.filter }}
