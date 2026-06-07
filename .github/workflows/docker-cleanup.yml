@@ -18,7 +18,7 @@ on:
         default: 10
         type: number
       protect_tags:
-        description: "Newline-separated list of tags to protect from deletion"
+        description: "Space or newline-separated list of tags to protect from deletion"
         required: false
         default: "latest"
         type: string
@@ -41,13 +41,22 @@ jobs:
           echo "org_name=${IMAGE_ORG}" >> "$GITHUB_OUTPUT"
           echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Build image-tags filter
+        id: image_tags
+        env:
+          PROTECT_TAGS: ${{ inputs.protect_tags }}
+        run: |
+          # Convert space/newline-separated protect_tags to negated v3 image-tags format
+          # e.g. "latest buildcache" -> "!latest !buildcache"
+          IMAGE_TAGS=$(echo "$PROTECT_TAGS" | tr '\n' ' ' | awk '{for(i=1;i<=NF;i++) printf "!%s ", $i}' | xargs)
+          echo "filter=${IMAGE_TAGS}" >> "$GITHUB_OUTPUT"
+
       - name: Delete old package versions
-        uses: snok/container-retention-policy@v2
+        uses: snok/container-retention-policy@v3.1.0
         with:
-          account-type: org
-          org-name: ${{ steps.image.outputs.org_name }}
+          account: ${{ steps.image.outputs.org_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           image-names: ${{ steps.image.outputs.image_name }}
           cut-off: ${{ inputs.cut_off }}
           keep-at-least: ${{ inputs.keep_at_least }}
-          skip-tags: ${{ inputs.protect_tags }}
+          image-tags: ${{ steps.image_tags.outputs.filter }}
