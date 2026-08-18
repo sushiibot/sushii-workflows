@@ -50,12 +50,13 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
-      - name: Checkout sushii-ansible
+      - name: Checkout sushii-ansible # zizmor: ignore[artipacked]
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sushiibot/sushii-ansible
           token: ${{ secrets.ANSIBLE_REPO_TOKEN }}
-          persist-credentials: false
+          # persist-credentials is needed here: the "Commit and push updated
+          # vars.yml" step below pushes back to sushii-ansible using this checkout.
 
       - name: Install Ansible
         run: pip install ansible
