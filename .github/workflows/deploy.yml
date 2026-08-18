@@ -51,10 +51,11 @@ jobs:
 
     steps:
       - name: Checkout sushii-ansible
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sushiibot/sushii-ansible
           token: ${{ secrets.ANSIBLE_REPO_TOKEN }}
+          persist-credentials: false
 
       - name: Install Ansible
         run: pip install ansible
@@ -71,7 +72,10 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Bump pinned image tag in vars.yml
-        run: ./scripts/bump-image-tag.sh "${{ inputs.service }}" "${{ inputs.image_version }}"
+        run: ./scripts/bump-image-tag.sh "${INPUTS_SERVICE}" "${INPUTS_IMAGE_VERSION}"
+        env:
+          INPUTS_SERVICE: ${{ inputs.service }}
+          INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
 
       - name: Commit and push updated vars.yml
         run: |
@@ -81,9 +85,12 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes — vars.yml already up to date"
           else
-            git commit -m "chore: bump ${{ inputs.service }} to ${{ inputs.image_version }}"
+            git commit -m "chore: bump ${INPUTS_SERVICE} to ${INPUTS_IMAGE_VERSION}"
             git push
           fi
+        env:
+          INPUTS_SERVICE: ${{ inputs.service }}
+          INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
 
       - name: Remove group vault file
         run: rm -f inventory/group_vars/all/vault.yml
@@ -91,13 +98,17 @@ jobs:
       - name: Run Ansible deploy
         env:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+          INPUTS_HOST: ${{ inputs.host }}
+          INPUTS_SERVICE: ${{ inputs.service }}
+          INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
+          INPUTS_ANSIBLE_TAGS: ${{ inputs.ansible_tags }}
         run: |
           ansible-playbook playbooks/deploy.yml \
             --vault-password-file ./vault-env \
-            -l "${{ inputs.host }}" \
-            -e "service=${{ inputs.service }}" \
-            -e "image_version=${{ inputs.image_version }}" \
-            -e "docker_image_check_version=${{ inputs.image_version }}" \
+            -l "${INPUTS_HOST}" \
+            -e "service=${INPUTS_SERVICE}" \
+            -e "image_version=${INPUTS_IMAGE_VERSION}" \
+            -e "docker_image_check_version=${INPUTS_IMAGE_VERSION}" \
             ${{ inputs.private_registry && format('-e "docker_registry_user={0}" -e "docker_registry_password={1}"', github.repository_owner, secrets.REGISTRY_TOKEN) || '' }} \
-            --tags "${{ inputs.ansible_tags }}" \
+            --tags "${INPUTS_ANSIBLE_TAGS}" \
             -v
