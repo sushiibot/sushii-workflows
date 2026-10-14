@@ -1,0 +1,126 @@
+name: Pull Deploy
+
+# Bumps the service's image tag in sushii-ansible, then waits for the host's pull deployer
+# (sushii-ansible roles/pull_deploy) to report the deploy as a commit status on the bump commit.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Service path (e.g., private-bots/omakase)"
+        required: true
+        type: string
+      image_version:
+        description: "Docker image tag to deploy"
+        required: true
+        type: string
+      host:
+        description: "Host whose pull deployer runs this service"
+        required: false
+        default: "apps"
+        type: string
+      timeout_minutes:
+        description: "How long to wait for the host's deploy status"
+        required: false
+        default: 15
+        type: number
+    secrets:
+      SUSHII_CI_PRIVATE_KEY:
+        description: "sushii-ci App key; pair with the SUSHII_CI_CLIENT_ID variable"
+        required: true
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Mint sushii-ansible token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SUSHII_CI_CLIENT_ID }}
+          private-key: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+          owner: sushiibot
+          repositories: sushii-ansible
+          permission-contents: write
+          permission-statuses: read
+
+      - name: Checkout sushii-ansible # zizmor: ignore[artipacked] the push step below reuses these credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: sushiibot/sushii-ansible
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Bump pinned image tag
+        run: ./scripts/bump-image-tag.sh "${INPUTS_SERVICE}" "${INPUTS_IMAGE_VERSION}"
+        env:
+          INPUTS_SERVICE: ${{ inputs.service }}
+          INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
+
+      - name: Commit and push
+        id: push
+        run: |
+          git config user.name "sushii-ci[bot]"
+          git config user.email "342252709+sushii-ci[bot]@users.noreply.github.com"
+          git add services/ inventory/
+          if git diff --cached --quiet; then
+            # Already pinned (e.g. a re-run): report the status of the commit that set the tag.
+            key=$(yq ".services[\"${INPUTS_SERVICE}\"].version_key" services/repos.yml)
+            echo "sha=$(git log -1 --format=%H -G "^${key}:" -- services/ inventory/host_vars/)" >> "$GITHUB_OUTPUT"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: bump ${INPUTS_SERVICE} to ${INPUTS_IMAGE_VERSION}"
+          # Other repos' deploys bump sushii-ansible concurrently.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((attempt * 2))
+            git pull --rebase origin main
+          done
+          exit 1
+        env:
+          INPUTS_SERVICE: ${{ inputs.service }}
+          INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
+
+      - name: Wait for host deploy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHA: ${{ steps.push.outputs.sha }}
+          CHANGED: ${{ steps.push.outputs.changed }}
+          CONTEXT: deploy/${{ inputs.host }}/${{ inputs.service }}
+          TRUST_CONTEXT: deploy/${{ inputs.host }}/trust
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          echo "Waiting for ${CONTEXT} on sushiibot/sushii-ansible@${SHA}"
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          while :; do
+            # Newest first; the first entry per context is its current state.
+            statuses=$(gh api "repos/sushiibot/sushii-ansible/commits/${SHA}/statuses?per_page=100")
+            state=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .state // empty' <<<"$statuses")
+            desc=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
+            trust=$(jq -r --arg c "$TRUST_CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
+            if [ -n "$trust" ]; then
+              echo "::error::Host rejected the commit: ${trust}"
+              exit 1
+            fi
+            case "$state" in
+              success) echo "Deployed: ${desc}"; exit 0 ;;
+              failure|error) echo "::error::${CONTEXT} failed: ${desc}"; exit 1 ;;
+            esac
+            if [ -z "$state" ] && [ "$CHANGED" = "false" ]; then
+              echo "Tag already pinned and that commit has no deploy status (it predates pull deploys); nothing to wait for."
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::No final deploy status after ${TIMEOUT_MINUTES}m (last: ${state:-none}). On the host: sushii-pull status; journalctl -u sushii-pull"
+              exit 1
+            fi
+            sleep 15
+          done
