@@ -53,6 +53,8 @@ jobs:
         with:
           repository: sushiibot/sushii-ansible
           token: ${{ steps.app-token.outputs.token }}
+          # The already-pinned path looks up the commit that set the tag; a shallow clone has no history to search.
+          fetch-depth: 0
 
       - name: Bump pinned image tag
         run: ./scripts/bump-image-tag.sh "${INPUTS_SERVICE}" "${INPUTS_IMAGE_VERSION}"
