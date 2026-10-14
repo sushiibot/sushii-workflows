@@ -94,14 +94,37 @@ jobs:
       - name: Wait for host deploy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Mirrors the host's status onto the calling commit; the caller grants statuses: write.
+          REPO_TOKEN: ${{ github.token }}
+          CALLER_REPO: ${{ github.repository }}
+          CALLER_SHA: ${{ github.sha }}
           SHA: ${{ steps.push.outputs.sha }}
           CHANGED: ${{ steps.push.outputs.changed }}
           CONTEXT: deploy/${{ inputs.host }}/${{ inputs.service }}
           TRUST_CONTEXT: deploy/${{ inputs.host }}/trust
           TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
         run: |
+          mirror() {
+            local args=(-f "state=$1" -f "context=${CONTEXT}" -f "description=${2:0:140}")
+            if [ -n "${url:-}" ]; then args+=(-f "target_url=${url}"); fi
+            GH_TOKEN="$REPO_TOKEN" gh api -X POST "repos/${CALLER_REPO}/statuses/${CALLER_SHA}" "${args[@]}" >/dev/null \
+              || echo "::warning::Could not post ${CONTEXT} to ${CALLER_REPO}; grant the deploy job statuses: write"
+          }
+          finish() {
+            mirror "$1" "$2"
+            {
+              echo "### ${CONTEXT}: $1"
+              echo "$2"
+              echo
+              echo "- sushii-ansible commit: https://github.com/sushiibot/sushii-ansible/commit/${SHA}"
+              if [ -n "${url:-}" ]; then echo "- [Deploy logs in Grafana](${url})"; fi
+            } >> "$GITHUB_STEP_SUMMARY"
+            [ "$1" = success ]
+            exit
+          }
           echo "Waiting for ${CONTEXT} on sushiibot/sushii-ansible@${SHA}"
           deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          mirrored=
           while :; do
             # Newest first; the first entry per context is its current state.
             statuses=$(gh api "repos/sushiibot/sushii-ansible/commits/${SHA}/statuses?per_page=100")
@@ -109,17 +132,19 @@ jobs:
             desc=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
             trust=$(jq -r --arg c "$TRUST_CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
             url=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .target_url // empty' <<<"$statuses")
-            if [ -n "$url" ] && [ "$url" != "${shown_url:-}" ]; then
-              echo "Deploy logs: ${url}"
-              shown_url=$url
-            fi
             if [ -n "$trust" ]; then
               echo "::error::Host rejected the commit: ${trust}"
-              exit 1
+              finish error "host rejected the sushii-ansible commit: ${trust}"
             fi
             case "$state" in
-              success) echo "Deployed: ${desc}"; exit 0 ;;
-              failure|error) echo "::error::${CONTEXT} failed: ${desc}"; exit 1 ;;
+              success) echo "Deployed: ${desc}"; finish success "$desc" ;;
+              failure|error) echo "::error::${CONTEXT} failed: ${desc}"; finish failure "$desc" ;;
+              pending)
+                if [ "${mirrored}" != "${url}" ]; then
+                  echo "Deploy logs: ${url}"
+                  mirror pending "$desc"
+                  mirrored=$url
+                fi ;;
             esac
             if [ -z "$state" ] && [ "$CHANGED" = "false" ]; then
               echo "Tag already pinned and that commit has no deploy status (it predates pull deploys); nothing to wait for."
@@ -127,7 +152,7 @@ jobs:
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "::error::No final deploy status after ${TIMEOUT_MINUTES}m (last: ${state:-none}). On the host: sushii-pull status; journalctl -u sushii-pull"
-              exit 1
+              finish error "no result from the host after ${TIMEOUT_MINUTES}m"
             fi
             sleep 15
           done
