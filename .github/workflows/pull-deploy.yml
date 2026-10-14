@@ -35,6 +35,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The calling job must grant this too: the result is posted on the calling commit.
+    permissions:
+      statuses: write
 
     steps:
       - name: Mint sushii-ansible token
