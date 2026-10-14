@@ -19,6 +19,11 @@ on:
         required: false
         default: "apps"
         type: string
+      environment:
+        description: "GitHub environment for deployment history and protection rules"
+        required: false
+        default: ""
+        type: string
       timeout_minutes:
         description: "How long to wait for the host's deploy status"
         required: false
@@ -34,6 +39,7 @@ permissions: {}
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     timeout-minutes: 30
     # The calling job must grant this too: the result is posted on the calling commit.
     permissions:
