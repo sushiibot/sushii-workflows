@@ -19,7 +19,11 @@ on:
         type: boolean
     secrets:
       ANSIBLE_REPO_TOKEN:
-        required: true
+        description: "Fallback for callers without SUSHII_CI_PRIVATE_KEY"
+        required: false
+      SUSHII_CI_PRIVATE_KEY:
+        description: "sushii-ci App key; pair with the SUSHII_CI_CLIENT_ID variable"
+        required: false
       ANSIBLE_SSH_PRIVATE_KEY:
         required: true
       ANSIBLE_KNOWN_HOSTS:
@@ -36,22 +40,40 @@ jobs:
     permissions:
       actions: read
       contents: write
+    env:
+      HAS_SUSHII_CI_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY != '' }}
 
     steps:
-      - name: Checkout sushii-ansible
+      - name: Mint sushii-ansible token
+        id: app-token
+        if: env.HAS_SUSHII_CI_KEY == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SUSHII_CI_CLIENT_ID }}
+          private-key: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+          owner: sushiibot
+          repositories: sushii-ansible
+          permission-contents: write
+
+      - name: Checkout sushii-ansible # zizmor: ignore[artipacked]
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sushiibot/sushii-ansible
-          token: ${{ secrets.ANSIBLE_REPO_TOKEN }}
-          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token || secrets.ANSIBLE_REPO_TOKEN }}
+          # deploy-sushii-bot.ts pushes the version bump through this checkout.
 
       - name: Configure git identity
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$HAS_SUSHII_CI_KEY" = "true" ]; then
+            git config user.name "sushii-ci[bot]"
+            git config user.email "342252709+sushii-ci[bot]@users.noreply.github.com"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          fi
 
       - name: Install Ansible
-        run: pip install ansible
+        run: pip install 'ansible-core>=2.21,<2.22'
 
       - name: Install Ansible Galaxy dependencies
         run: ansible-galaxy install -r requirements.yml
@@ -82,7 +104,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
-        run: bun run scripts/deploy-sushii-bot.ts --summary --sha ${INPUTS_IMAGE_VERSION}
+        run: bun run scripts/deploy-sushii-bot.ts --summary --sha "${INPUTS_IMAGE_VERSION}"
 
       - name: Run deploy script
         env:
@@ -90,12 +112,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DISCORD_DEPLOY_WEBHOOK_URL: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
           INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
+          INPUTS_DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          ARGS="--sha ${INPUTS_IMAGE_VERSION}"
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            ARGS="$ARGS --dry-run"
+          ARGS=(--sha "${INPUTS_IMAGE_VERSION}")
+          if [ "${INPUTS_DRY_RUN}" = "true" ]; then
+            ARGS+=(--dry-run)
           fi
-          bun run scripts/deploy-sushii-bot.ts $ARGS
+          bun run scripts/deploy-sushii-bot.ts "${ARGS[@]}"
 
   mark-deployment-inactive:
     if: cancelled() && inputs.environment != ''

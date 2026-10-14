@@ -33,7 +33,11 @@ on:
         type: boolean
     secrets:
       ANSIBLE_REPO_TOKEN:
-        required: true
+        description: "Fallback for callers without SUSHII_CI_PRIVATE_KEY"
+        required: false
+      SUSHII_CI_PRIVATE_KEY:
+        description: "sushii-ci App key; pair with the SUSHII_CI_CLIENT_ID variable"
+        required: false
       ANSIBLE_SSH_PRIVATE_KEY:
         required: true
       ANSIBLE_KNOWN_HOSTS:
@@ -48,18 +52,31 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+    env:
+      HAS_SUSHII_CI_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY != '' }}
 
     steps:
+      - name: Mint sushii-ansible token
+        id: app-token
+        if: env.HAS_SUSHII_CI_KEY == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SUSHII_CI_CLIENT_ID }}
+          private-key: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+          owner: sushiibot
+          repositories: sushii-ansible
+          permission-contents: write
+
       - name: Checkout sushii-ansible # zizmor: ignore[artipacked]
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sushiibot/sushii-ansible
-          token: ${{ secrets.ANSIBLE_REPO_TOKEN }}
+          token: ${{ steps.app-token.outputs.token || secrets.ANSIBLE_REPO_TOKEN }}
           # persist-credentials is needed here: the "Commit and push updated
           # vars.yml" step below pushes back to sushii-ansible using this checkout.
 
       - name: Install Ansible
-        run: pip install ansible
+        run: pip install 'ansible-core>=2.21,<2.22'
 
       - name: Install Ansible Galaxy dependencies
         run: ansible-galaxy install -r requirements.yml
@@ -80,15 +97,26 @@ jobs:
 
       - name: Commit and push updated vars.yml
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ "$HAS_SUSHII_CI_KEY" = "true" ]; then
+            git config user.name "sushii-ci[bot]"
+            git config user.email "342252709+sushii-ci[bot]@users.noreply.github.com"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+          fi
           git add services/ inventory/
           if git diff --cached --quiet; then
             echo "No changes — vars.yml already up to date"
-          else
-            git commit -m "chore: bump ${INPUTS_SERVICE} to ${INPUTS_IMAGE_VERSION}"
-            git push
+            exit 0
           fi
+          git commit -m "chore: bump ${INPUTS_SERVICE} to ${INPUTS_IMAGE_VERSION}"
+          # Other repos' deploys bump sushii-ansible concurrently.
+          for attempt in 1 2 3 4 5; do
+            git push && exit 0
+            sleep $((attempt * 2))
+            git pull --rebase origin main
+          done
+          exit 1
         env:
           INPUTS_SERVICE: ${{ inputs.service }}
           INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
