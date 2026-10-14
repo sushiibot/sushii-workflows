@@ -108,6 +108,11 @@ jobs:
             state=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .state // empty' <<<"$statuses")
             desc=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
             trust=$(jq -r --arg c "$TRUST_CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
+            url=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .target_url // empty' <<<"$statuses")
+            if [ -n "$url" ] && [ "$url" != "${shown_url:-}" ]; then
+              echo "Deploy logs: ${url}"
+              shown_url=$url
+            fi
             if [ -n "$trust" ]; then
               echo "::error::Host rejected the commit: ${trust}"
               exit 1
