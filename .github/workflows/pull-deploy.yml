@@ -29,6 +29,11 @@ on:
         required: false
         default: 15
         type: number
+      job_timeout_minutes:
+        description: "Job timeout; must exceed timeout_minutes plus a few minutes for the bump"
+        required: false
+        default: 30
+        type: number
     secrets:
       SUSHII_CI_PRIVATE_KEY:
         description: "sushii-ci App key; pair with the SUSHII_CI_CLIENT_ID variable"
@@ -40,7 +45,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
     # The calling job must grant this too: the result is posted on the calling commit.
     permissions:
       statuses: write
@@ -65,7 +70,38 @@ jobs:
           # The already-pinned path looks up the commit that set the tag; a shallow clone has no history to search.
           fetch-depth: 0
 
+      # Approving an older run after a newer one deployed must not pin the older image: hosts reject backward
+      # bumps and stop verifying commits until an operator accepts one.
+      - name: Skip if a newer version is already pinned
+        id: guard
+        run: |
+          key=$(yq ".services[\"${INPUTS_SERVICE}\"].version_key" services/repos.yml)
+          repo=$(yq ".services[\"${INPUTS_SERVICE}\"].repo" services/repos.yml)
+          [[ "$key" =~ ^[a-z0-9_]+$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 0
+          file=$(grep -rlE --include=vars.yml "^${key}:" services/ inventory/host_vars/ | head -1)
+          [ -n "$file" ] || exit 0
+          current=$(yq ".${key}" "$file")
+          [[ "$current" =~ ^[0-9a-f]{7,40}$ ]] || exit 0
+          if ! status=$(gh api "repos/${repo}/compare/${current}...${INPUTS_IMAGE_VERSION}" --jq .status); then
+            echo "::warning::Couldn't compare ${current}...${INPUTS_IMAGE_VERSION} in ${repo}; bumping without the newer-version check"
+            exit 0
+          fi
+          case "$status" in
+            ahead|identical) ;;
+            behind)
+              echo "::notice::${repo} ${INPUTS_IMAGE_VERSION} is older than the pinned ${current}; nothing to deploy"
+              echo "skip=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::${repo} ${INPUTS_IMAGE_VERSION} has diverged from the pinned ${current}"
+              exit 1 ;;
+          esac
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS_SERVICE: ${{ inputs.service }}
+          INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
+
       - name: Bump pinned image tag
+        if: steps.guard.outputs.skip != 'true'
         run: ./scripts/bump-image-tag.sh "${INPUTS_SERVICE}" "${INPUTS_IMAGE_VERSION}"
         env:
           INPUTS_SERVICE: ${{ inputs.service }}
@@ -73,6 +109,7 @@ jobs:
 
       - name: Commit and push
         id: push
+        if: steps.guard.outputs.skip != 'true'
         run: |
           git config user.name "sushii-ci[bot]"
           git config user.email "342252709+sushii-ci[bot]@users.noreply.github.com"
@@ -101,6 +138,7 @@ jobs:
           INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
 
       - name: Wait for host deploy
+        if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Mirrors the host's status onto the calling commit; the caller grants statuses: write.
