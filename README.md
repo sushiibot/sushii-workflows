@@ -3,25 +3,14 @@
 Reusable GitHub Actions workflows for sushiibot projects. See individual workflow
 files in `.github/workflows/` for inputs and usage.
 
-## Secrets
+## Deploys
 
-Four secrets are required by the deploy workflow. Set them once org-wide (requires
-`admin:org` token scope) or per-repo:
+Services deploy through `pull-deploy.yml`: it bumps the image tag in sushii-ansible,
+and the host's pull deployer applies the commit and reports back as a commit status.
 
-```bash
-cp .env.example .env
-# fill in values
+It authenticates as the sushii-ci GitHub App:
 
-gh secret set -f .env --org sushiibot
-# or: gh secret set -f .env --repo sushiibot/<repo>
-```
-
-| Secret | How to get it |
-|--------|--------------|
-| `ANSIBLE_REPO_TOKEN` | GitHub PAT with `repo` scope |
-| `ANSIBLE_SSH_PRIVATE_KEY` | Deploy private key from sushii-ansible |
-| `ANSIBLE_KNOWN_HOSTS` | `ssh-keyscan` output for deployment servers |
-| `ANSIBLE_VAULT_PASSWORD` | Vault password from sushii-ansible |
-
-Multiline values (`ANSIBLE_SSH_PRIVATE_KEY`, `ANSIBLE_KNOWN_HOSTS`) must be
-double-quoted in `.env`. See `.env.example`.
+| Name | Kind | Value |
+|------|------|-------|
+| `SUSHII_CI_CLIENT_ID` | variable | sushii-ci App client ID |
+| `SUSHII_CI_PRIVATE_KEY` | secret | sushii-ci App private key |
