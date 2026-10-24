@@ -78,6 +78,18 @@ jobs:
           key=$(yq ".services[\"${INPUTS_SERVICE}\"].version_key" services/repos.yml)
           repo=$(yq ".services[\"${INPUTS_SERVICE}\"].repo" services/repos.yml)
           [[ "$key" =~ ^[a-z0-9_]+$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 0
+          # The host rejects an unsigned bump to a commit off the default branch and then deploys nothing.
+          if default=$(gh api "repos/${repo}" --jq .default_branch) \
+            && on_main=$(gh api "repos/${repo}/compare/${INPUTS_IMAGE_VERSION}...${default}" --jq .status); then
+            case "$on_main" in
+              ahead|identical) ;;
+              *)
+                echo "::error::${repo} ${INPUTS_IMAGE_VERSION} is no longer on ${default} (${on_main}); was ${default} force-pushed? Not bumping: the host would reject it and block every deploy on it"
+                exit 1 ;;
+            esac
+          else
+            echo "::warning::Couldn't check that ${INPUTS_IMAGE_VERSION} is on ${repo}'s default branch"
+          fi
           file=$(grep -rlE --include=vars.yml "^${key}:" services/ inventory/host_vars/ | head -1)
           [ -n "$file" ] || exit 0
           current=$(yq ".${key}" "$file")
@@ -92,7 +104,7 @@ jobs:
               echo "::notice::${repo} ${INPUTS_IMAGE_VERSION} is older than the pinned ${current}; nothing to deploy"
               echo "skip=true" >> "$GITHUB_OUTPUT" ;;
             *)
-              echo "::error::${repo} ${INPUTS_IMAGE_VERSION} has diverged from the pinned ${current}"
+              echo "::error::${repo} ${INPUTS_IMAGE_VERSION} has diverged from the pinned ${current}, so the pinned commit left ${default:-the default branch}. CI can't move this pin: push an operator-signed sushii-ansible commit setting ${key} to ${INPUTS_IMAGE_VERSION}"
               exit 1 ;;
           esac
         env:
@@ -177,9 +189,11 @@ jobs:
             statuses=$(gh api "repos/sushiibot/sushii-ansible/commits/${SHA}/statuses?per_page=100")
             state=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .state // empty' <<<"$statuses")
             desc=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
+            trust_state=$(jq -r --arg c "$TRUST_CONTEXT" '[.[] | select(.context == $c)][0] | .state // empty' <<<"$statuses")
             trust=$(jq -r --arg c "$TRUST_CONTEXT" '[.[] | select(.context == $c)][0] | .description // empty' <<<"$statuses")
             url=$(jq -r --arg c "$CONTEXT" '[.[] | select(.context == $c)][0] | .target_url // empty' <<<"$statuses")
-            if [ -n "$trust" ]; then
+            # A blocked commit's failure is superseded by success once the host trusts it.
+            if [ "$trust_state" = failure ] || [ "$trust_state" = error ]; then
               echo "::error::Host rejected the commit: ${trust}"
               finish error "host rejected the sushii-ansible commit: ${trust}"
             fi
