@@ -1,0 +1,46 @@
+name: Automatic Release
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Service path; defaults to repository variable RELEASE_SERVICE"
+        type: string
+        default: ""
+      host:
+        description: "Host; defaults to repository variable RELEASE_HOST, then apps"
+        type: string
+        default: ""
+      image_version:
+        description: "Built SHA tag from this push (7-40 hex characters)"
+        type: string
+        required: true
+      environment:
+        type: string
+        default: ""
+      receipt_name:
+        description: "Set staging-release when this deployment can be promoted later"
+        type: string
+        default: ""
+    secrets:
+      SUSHII_CI_PRIVATE_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  deploy:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      statuses: write
+      contents: read
+    uses: ./.github/workflows/pull-deploy.yml
+    with:
+      service: ${{ inputs.service || vars.RELEASE_SERVICE }}
+      host: ${{ inputs.host || vars.RELEASE_HOST || 'apps' }}
+      image_version: ${{ inputs.image_version }}
+      environment: ${{ inputs.environment }}
+      receipt_name: ${{ inputs.receipt_name }}
+      require_deploy_success: true
+    secrets:
+      SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}

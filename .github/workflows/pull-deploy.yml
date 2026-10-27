@@ -34,23 +34,65 @@ on:
         required: false
         default: 30
         type: number
+      require_deploy_success:
+        description: "Fail closed on missing host evidence, stale versions, or unverifiable ancestry"
+        type: boolean
+        default: false
+      source_sha:
+        description: "Original source commit for a validated manual promotion"
+        type: string
+        default: ""
+      receipt_name:
+        description: "Optional artifact name for a successful SHA-tag deployment receipt"
+        type: string
+        default: ""
+    outputs:
+      deployed:
+        description: "True only when the host reported success"
+        value: ${{ jobs.deploy.outputs.deployed }}
+      infra_sha:
+        description: "Infrastructure commit with the successful host status"
+        value: ${{ jobs.deploy.outputs.infra_sha }}
     secrets:
       SUSHII_CI_PRIVATE_KEY:
         description: "sushii-ci App key; pair with the SUSHII_CI_CLIENT_ID variable"
         required: true
 
-permissions: {}
+# Inherit the calling job's permissions. Existing callers grant statuses: write;
+# presets also grant contents: read for fail-closed ancestry checks in private repos.
+# Declaring contents: read here would break legacy callers that only grant statuses.
+# zizmor: ignore[excessive-permissions] reusable workflow intentionally inherits the caller's explicit permissions
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     timeout-minutes: ${{ inputs.job_timeout_minutes }}
-    # The calling job must grant this too: the result is posted on the calling commit.
-    permissions:
-      statuses: write
+    outputs:
+      deployed: ${{ steps.wait.outputs.deployed }}
+      infra_sha: ${{ steps.push.outputs.sha }}
 
     steps:
+      - name: Validate preset inputs
+        if: inputs.require_deploy_success || inputs.receipt_name != ''
+        env:
+          SERVICE: ${{ inputs.service }}
+          HOST: ${{ inputs.host }}
+          VERSION: ${{ inputs.image_version }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          RECEIPT_NAME: ${{ inputs.receipt_name }}
+          STRICT: ${{ inputs.require_deploy_success }}
+          TIMEOUT: ${{ inputs.timeout_minutes }}
+          JOB_TIMEOUT: ${{ inputs.job_timeout_minutes }}
+        run: |
+          [[ "$SERVICE" =~ ^[a-z0-9-]+/[a-z0-9-]+$ && "$HOST" =~ ^[a-z0-9-]+$ ]]
+          [[ "$VERSION" =~ ^[0-9a-f]{7,40}$ && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_SHA" == "$VERSION"* ]]
+          [[ -z "$RECEIPT_NAME" || "$RECEIPT_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]
+          [[ -z "$RECEIPT_NAME" || "$STRICT" == true ]]
+          [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ && "$JOB_TIMEOUT" =~ ^[1-9][0-9]*$ ]]
+          (( JOB_TIMEOUT >= TIMEOUT + 5 ))
+
       - name: Mint sushii-ansible token
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -75,9 +117,18 @@ jobs:
       - name: Skip if a newer version is already pinned
         id: guard
         run: |
+          unverifiable() {
+            echo "::warning::$1"
+            if [ "$STRICT" = true ]; then exit 1; fi
+            exit 0
+          }
           key=$(yq ".services[\"${INPUTS_SERVICE}\"].version_key" services/repos.yml)
           repo=$(yq ".services[\"${INPUTS_SERVICE}\"].repo" services/repos.yml)
-          [[ "$key" =~ ^[a-z0-9_]+$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 0
+          [[ "$key" =~ ^[a-z0-9_]+$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || unverifiable "Invalid service repository mapping"
+          if [ "$STRICT" = true ] && [ "$repo" != "$CALLER_REPO" ]; then
+            echo "::error::Service belongs to another repository"
+            exit 1
+          fi
           # The host rejects an unsigned bump to a commit off the default branch and then deploys nothing.
           if default=$(gh api "repos/${repo}" --jq .default_branch) \
             && on_main=$(gh api "repos/${repo}/compare/${INPUTS_IMAGE_VERSION}...${default}" --jq .status); then
@@ -88,20 +139,23 @@ jobs:
                 exit 1 ;;
             esac
           else
+            if [ "$STRICT" = true ]; then exit 1; fi
             echo "::warning::Couldn't check that ${INPUTS_IMAGE_VERSION} is on ${repo}'s default branch"
           fi
           file=$(grep -rlE --include=vars.yml "^${key}:" services/ inventory/host_vars/ | head -1)
-          [ -n "$file" ] || exit 0
+          [ -n "$file" ] || unverifiable "Missing version file"
           current=$(yq ".${key}" "$file")
-          [[ "$current" =~ ^[0-9a-f]{7,40}$ ]] || exit 0
+          [[ "$current" =~ ^[0-9a-f]{7,40}$ ]] || unverifiable "Invalid current version"
           if ! status=$(gh api "repos/${repo}/compare/${current}...${INPUTS_IMAGE_VERSION}" --jq .status); then
             echo "::warning::Couldn't compare ${current}...${INPUTS_IMAGE_VERSION} in ${repo}; bumping without the newer-version check"
+            if [ "$STRICT" = true ]; then exit 1; fi
             exit 0
           fi
           case "$status" in
             ahead|identical) ;;
             behind)
               echo "::notice::${repo} ${INPUTS_IMAGE_VERSION} is older than the pinned ${current}; nothing to deploy"
+              if [ "$STRICT" = true ]; then exit 1; fi
               echo "skip=true" >> "$GITHUB_OUTPUT" ;;
             *)
               echo "::error::${repo} ${INPUTS_IMAGE_VERSION} has diverged from the pinned ${current}, so the pinned commit left ${default:-the default branch}. CI can't move this pin: push an operator-signed sushii-ansible commit setting ${key} to ${INPUTS_IMAGE_VERSION}"
@@ -109,6 +163,8 @@ jobs:
           esac
         env:
           GH_TOKEN: ${{ github.token }}
+          STRICT: ${{ inputs.require_deploy_success }}
+          CALLER_REPO: ${{ github.repository }}
           INPUTS_SERVICE: ${{ inputs.service }}
           INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
 
@@ -150,13 +206,15 @@ jobs:
           INPUTS_IMAGE_VERSION: ${{ inputs.image_version }}
 
       - name: Wait for host deploy
+        id: wait
         if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Mirrors the host's status onto the calling commit; the caller grants statuses: write.
           REPO_TOKEN: ${{ github.token }}
           CALLER_REPO: ${{ github.repository }}
-          CALLER_SHA: ${{ github.sha }}
+          CALLER_SHA: ${{ inputs.source_sha || github.sha }}
+          STRICT: ${{ inputs.require_deploy_success }}
           SHA: ${{ steps.push.outputs.sha }}
           CHANGED: ${{ steps.push.outputs.changed }}
           CONTEXT: deploy/${{ inputs.host }}/${{ inputs.service }}
@@ -179,6 +237,7 @@ jobs:
               if [ -n "${url:-}" ]; then echo "- [Deploy logs in Grafana](${url})"; fi
             } >> "$GITHUB_STEP_SUMMARY"
             [ "$1" = success ]
+            echo "deployed=true" >> "$GITHUB_OUTPUT"
             exit
           }
           echo "Waiting for ${CONTEXT} on sushiibot/sushii-ansible@${SHA}"
@@ -208,6 +267,9 @@ jobs:
                 fi ;;
             esac
             if [ -z "$state" ] && [ "$CHANGED" = "false" ]; then
+              if [ "$STRICT" = true ]; then
+                finish error "Tag is pinned but has no successful host deployment evidence"
+              fi
               echo "Tag already pinned and that commit has no deploy status (it predates pull deploys); nothing to wait for."
               exit 0
             fi
@@ -217,3 +279,40 @@ jobs:
             fi
             sleep 15
           done
+
+      - name: Record successful deployment
+        if: inputs.receipt_name != '' && steps.wait.outputs.deployed == 'true'
+        env:
+          RECEIPT_DIR: ${{ runner.temp }}/release-receipt
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          IMAGE_VERSION: ${{ inputs.image_version }}
+          SERVICE: ${{ inputs.service }}
+          HOST: ${{ inputs.host }}
+          INFRA_SHA: ${{ steps.push.outputs.sha }}
+        run: |
+          mkdir -p "$RECEIPT_DIR"
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          fields = {k.lower(): os.environ[k] for k in (
+              "REPOSITORY", "SOURCE_SHA", "IMAGE_VERSION", "SERVICE", "HOST", "INFRA_SHA")}
+          fields.update(schema_version=1, run_id=int(os.environ["GITHUB_RUN_ID"]),
+                        run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]))
+          Path(os.environ["RECEIPT_DIR"], "release.json").write_text(json.dumps(fields))
+          PYTHON
+
+      - name: Upload deployment receipt
+        if: inputs.receipt_name != '' && steps.wait.outputs.deployed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.receipt_name }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-receipt/release.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Link release run
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: echo "[Release run and approval]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"

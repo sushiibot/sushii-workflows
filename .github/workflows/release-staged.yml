@@ -1,0 +1,84 @@
+name: Staged Release
+
+on:
+  workflow_call:
+    inputs:
+      image_version:
+        description: "Built SHA tag from this push; used unchanged for both deployments"
+        type: string
+        required: true
+      staging_service:
+        description: "Defaults to repository variable STAGING_SERVICE"
+        type: string
+        default: ""
+      staging_host:
+        description: "Defaults to repository variable STAGING_HOST, then apps"
+        type: string
+        default: ""
+      production_service:
+        description: "Defaults to repository variable PRODUCTION_SERVICE"
+        type: string
+        default: ""
+      production_host:
+        description: "Defaults to repository variable PRODUCTION_HOST, then apps"
+        type: string
+        default: ""
+      production_environment:
+        type: string
+        default: production
+      receipt_name:
+        description: "Receipt name for later promotion of completed staging runs"
+        type: string
+        default: staging-release
+      staging_environment:
+        type: string
+        default: staging
+    secrets:
+      SUSHII_CI_PRIVATE_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  approval-config:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      actions: read
+    uses: ./.github/workflows/_release-approval.yml
+    with:
+      production_environment: ${{ inputs.production_environment }}
+
+  staging:
+    needs: approval-config
+    permissions:
+      statuses: write
+      contents: read
+    uses: ./.github/workflows/pull-deploy.yml
+    with:
+      service: ${{ inputs.staging_service || vars.STAGING_SERVICE }}
+      host: ${{ inputs.staging_host || vars.STAGING_HOST || 'apps' }}
+      image_version: ${{ inputs.image_version }}
+      environment: ${{ inputs.staging_environment }}
+      require_deploy_success: true
+      receipt_name: ${{ inputs.receipt_name }}
+    secrets:
+      SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+
+  production:
+    needs: staging
+    if: needs.staging.outputs.deployed == 'true'
+    concurrency:
+      group: release-${{ github.repository }}-${{ inputs.production_service || vars.PRODUCTION_SERVICE }}
+      cancel-in-progress: false
+    permissions:
+      statuses: write
+      contents: read
+    uses: ./.github/workflows/pull-deploy.yml
+    with:
+      service: ${{ inputs.production_service || vars.PRODUCTION_SERVICE }}
+      host: ${{ inputs.production_host || vars.PRODUCTION_HOST || 'apps' }}
+      image_version: ${{ inputs.image_version }}
+      environment: ${{ inputs.production_environment }}
+      require_deploy_success: true
+    secrets:
+      SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
