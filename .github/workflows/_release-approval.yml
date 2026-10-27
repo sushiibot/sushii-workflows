@@ -1,0 +1,37 @@
+name: Check Release Approval Configuration
+
+on:
+  workflow_call:
+    inputs:
+      production_environment:
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Check production approval configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ENVIRONMENT: ${{ inputs.production_environment }}
+        run: |
+          test -n "$ENVIRONMENT"
+          encoded=$(jq -rn --arg value "$ENVIRONMENT" '$value | @uri')
+          gh api "repos/$REPOSITORY/environments/$encoded" > "$RUNNER_TEMP/release-environment.json"
+          jq -e 'any(.protection_rules[]?; .type == "required_reviewers" and (.reviewers | length) > 0)' \
+            "$RUNNER_TEMP/release-environment.json" >/dev/null || {
+              echo '::error::Configure required reviewers on the production environment before using this preset.'
+              exit 1
+            }
+
+
+      - name: Link approval run
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: echo "[Open release run to review production deployment]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"
