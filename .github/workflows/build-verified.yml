@@ -1,0 +1,73 @@
+name: Build verified image
+
+on:
+  workflow_call:
+    outputs:
+      artifact_digest:
+        description: Immutable digest produced and attested by this build
+        value: ${{ jobs.attest.outputs.digest }}
+
+permissions: {}
+
+jobs:
+  build:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.identity.outputs.image }}
+    steps:
+      # No caller checkout, scripts, local context, or caller-controlled build arguments.
+      - name: Derive image identity
+        id: identity
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "image=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build exact source
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: https://github.com/${{ github.repository }}.git#${{ github.sha }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.identity.outputs.image }}:${{ github.sha }}
+          build-args: GIT_HASH=${{ github.sha }}
+
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ needs.build.outputs.digest }}
+    steps:
+      - name: Attest produced digest
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ needs.build.outputs.image }}
+          subject-digest: ${{ needs.build.outputs.digest }}
+      - name: Retain build bundle
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/build-evidence"
+          cp "$BUNDLE" "$RUNNER_TEMP/build-evidence/build.sigstore.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-provenance-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/build-evidence/build.sigstore.json
+          if-no-files-found: error
+          retention-days: 30

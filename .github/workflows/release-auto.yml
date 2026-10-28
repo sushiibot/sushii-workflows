@@ -14,7 +14,14 @@ on:
       image_version:
         description: "Built SHA tag from this push (7-40 hex characters)"
         type: string
-        required: true
+        default: ""
+      target:
+        description: Logical registry target for a verified artifact release
+        type: string
+        default: ""
+      artifact_digest:
+        type: string
+        default: ""
       environment:
         type: string
         default: ""
@@ -39,14 +46,45 @@ on:
     outputs:
       deployed:
         description: "True only after host success"
-        value: ${{ jobs.deploy.outputs.deployed }}
+        value: ${{ jobs.deploy.outputs.deployed || jobs.registry.outputs.deployed }}
     secrets:
       SUSHII_CI_PRIVATE_KEY:
-        required: true
+        required: false
 
 permissions: {}
 
 jobs:
+  registry-inputs:
+    if: inputs.target != ''
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require the automatic registry contract
+        env:
+          APPROVAL: ${{ inputs.require_approval }}
+          MANUAL: ${{ inputs.allow_manual }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SERVICE: ${{ inputs.service }}
+          HOST: ${{ inputs.host }}
+          VERSION: ${{ inputs.image_version }}
+        run: |
+          [[ "$APPROVAL" == false && "$MANUAL" == false ]]
+          [[ -z "$ENVIRONMENT$SERVICE$HOST$VERSION" ]]
+
+  registry:
+    needs: registry-inputs
+    if: inputs.target != ''
+    permissions:
+      contents: read
+      actions: read
+      statuses: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_release-request.yml
+    with:
+      target: ${{ inputs.target }}
+      artifact_digest: ${{ inputs.artifact_digest }}
+
   approval-config:
     if: inputs.require_approval && (github.event_name == 'push' || (inputs.allow_manual && github.event_name == 'workflow_dispatch')) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
@@ -59,6 +97,7 @@ jobs:
     needs: approval-config
     if: >-
       !cancelled() &&
+      inputs.target == '' &&
       (github.event_name == 'push' || (inputs.allow_manual && github.event_name == 'workflow_dispatch')) &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       (needs.approval-config.result == 'success' || (!inputs.require_approval && needs.approval-config.result == 'skipped'))

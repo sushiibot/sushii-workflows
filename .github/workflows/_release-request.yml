@@ -1,0 +1,122 @@
+name: Request registry release
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+      artifact_digest:
+        type: string
+        required: true
+    outputs:
+      deployed:
+        value: ${{ jobs.wait.outputs.deployed }}
+
+permissions: {}
+
+jobs:
+  publish:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Construct release intent
+        env:
+          TARGET: ${{ inputs.target }}
+          DIGEST: ${{ inputs.artifact_digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          import hashlib, urllib.parse, urllib.request
+          from pathlib import Path
+          target, digest = os.environ['TARGET'], os.environ['DIGEST']
+          assert re.fullmatch(r'[a-z0-9][a-z0-9-]*', target), 'Invalid target'
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}', digest), 'Invalid digest'
+          request = dict(schema_version=1, target=target, artifact_digest=digest,
+                         source_sha=os.environ['GITHUB_SHA'], run_id=int(os.environ['GITHUB_RUN_ID']),
+                         run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
+          directory = Path(os.environ['RUNNER_TEMP']) / 'release-request'
+          directory.mkdir()
+          (directory / 'request.json').write_text(json.dumps(request, sort_keys=True) + '\n')
+          repository = os.environ['GITHUB_REPOSITORY'].lower()
+          query = urllib.parse.urlencode({'service': 'ghcr.io', 'scope': f'repository:{repository}:pull'})
+          token = json.load(urllib.request.urlopen('https://ghcr.io/token?' + query, timeout=30))['token']
+          req = urllib.request.Request(f'https://ghcr.io/v2/{repository}/manifests/{digest}', headers={
+              'Authorization': 'Bearer ' + token,
+              'Accept': 'application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json'})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              manifest = response.read(4 * 1024 * 1024 + 1)
+          assert len(manifest) <= 4 * 1024 * 1024
+          assert 'sha256:' + hashlib.sha256(manifest).hexdigest() == digest
+          (directory / 'artifact-manifest.json').write_bytes(manifest)
+          PY
+      - name: Fetch this run's build evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: build-provenance-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-request
+      - name: Sign explicit release intent
+        id: intent
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/release-request/request.json
+      - name: Retain intent bundle
+        env:
+          BUNDLE: ${{ steps.intent.outputs.bundle-path }}
+        run: cp "$BUNDLE" "$RUNNER_TEMP/release-request/intent.sigstore.json"
+      - name: Publish release request
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-request-${{ inputs.target }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-request/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Link release run
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: echo "[Release request and result]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"
+
+  wait:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      statuses: read
+    outputs:
+      deployed: ${{ steps.wait.outputs.deployed }}
+    steps:
+      - name: Wait for exact host receipt
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ inputs.target }}
+          DIGEST: ${{ inputs.artifact_digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          context = f"release/{os.environ['TARGET']}/{os.environ['GITHUB_RUN_ID']}/{os.environ['GITHUB_RUN_ATTEMPT']}"
+          path = f"repos/{os.environ['GITHUB_REPOSITORY']}/commits/{os.environ['GITHUB_SHA']}/statuses?per_page=100"
+          deadline = time.monotonic() + 1800
+          while time.monotonic() < deadline:
+              pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp', path], text=True))
+              statuses = [status for page in pages for status in page]
+              status = next((s for s in statuses if s['context'] == context and
+                             (s.get('creator') or {}).get('id') == 342252709), None)
+              if status and status['state'] == 'success':
+                  assert status['description'] == 'deployed ' + os.environ['DIGEST'], 'Receipt digest mismatch'
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                      output.write('deployed=true\n')
+                  print('Host deployed the requested immutable artifact.')
+                  break
+              if status and status['state'] in ('failure', 'error'):
+                  raise SystemExit('Release rejected or deployment failed; inspect the release status.')
+              time.sleep(15)
+          else:
+              raise SystemExit('No matching host deployment receipt within 30 minutes.')
+          PY
