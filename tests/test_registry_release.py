@@ -9,12 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_release_presets import workflow, step
+from test_release_presets import workflow, step, helper_code
 
 
 def python_step(title, job):
-    script = step("_release-request.yml", title, job)["run"]
-    return script.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    return helper_code("_release-request.yml", title, job)
 
 
 class RegistryReleaseTests(unittest.TestCase):
@@ -35,8 +34,7 @@ class RegistryReleaseTests(unittest.TestCase):
 
     def test_builder_supplies_trusted_utc_build_date(self):
         from datetime import datetime, timezone
-        script = step("build-verified.yml", "Derive image identity", "build")["run"]
-        script = script.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        script = helper_code("build-verified.yml", "Derive image identity", "build")
         before = datetime.now(timezone.utc).replace(microsecond=0)
         with patch.dict(os.environ, {**self.env, "REPOSITORY": "example/worker", "IMAGE": "", "ARTIFACT": "",
                                     "DOCKERFILE": "Dockerfile", "BUILD_TARGET": "", "BUILD_DATE": "untrusted"}):
@@ -135,8 +133,7 @@ class RegistryReleaseTests(unittest.TestCase):
 
     def test_named_builds_use_exact_source_and_distinct_tags(self):
         job = workflow('build-verified.yml')['jobs']['build']
-        script = next(s['run'] for s in job['steps'] if s.get('name') == 'Derive image identity')
-        code = script.split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        code = helper_code("build-verified.yml", "Derive image identity", "build")
         env = dict(self.env, IMAGE='ghcr.io/example/custom', ARTIFACT='workspace',
                    REPOSITORY='example/worker', DOCKERFILE='packages/app/Dockerfile', BUILD_TARGET='workspace')
         with patch.dict(os.environ, env):
@@ -217,8 +214,7 @@ class RegistryReleaseTests(unittest.TestCase):
 
     def test_preflight_rejects_missing_gate_and_replays_before_publish(self):
         environment, _ = self.approved_fixture()
-        code = step('_release-request.yml', 'Validate approval contract before the gate', 'preflight')['run']
-        code = code.split("python3 - <<'PYCODE'\n", 1)[1].rsplit('\nPYCODE', 1)[0]
+        code = python_step('Validate approval contract before the gate', 'preflight')
         self.env.update(PROVENANCE='attested', ARTIFACT_KIND='oci')
         with patch.dict(os.environ, self.env), patch('subprocess.check_output', return_value=json.dumps(environment)):
             exec(code, {})

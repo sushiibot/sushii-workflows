@@ -284,3 +284,28 @@ If a source run fails or is superseded, start a fresh push run.
 A manual entry point can link to the original CI run for approval.
 It must not substitute another image or approve the gate automatically.
 The legacy `release-promote.yml` contract does not promote registry records across runs.
+
+
+## Maintaining release helpers
+
+Workflow YAML owns triggers, job dependencies, permissions, approval environments,
+and action wiring. Python in `actions/release-tools/` handles validation, release
+requests, artifact evidence, and host receipts.
+
+Shared workflows call this composite action at a full commit SHA. The action runs
+scripts from its own directory with Python isolated mode. It does not check out
+or execute caller scripts. Keep small shell commands inline.
+
+When a helper changes, commit the helper first. Then update the action SHA in the
+shared workflows and run the release tests. Publish both commits together.
+Consumers continue using their existing workflow pins until explicitly upgraded.
+Builder and publisher upgrades also require the private registry's trust pins.
+
+Run the offline tests with:
+
+```sh
+uv run --with pyyaml python -m unittest discover -s tests
+```
+
+CI also runs the composite action with synthetic build inputs to check its output
+forwarding. This smoke test does not build an image or request a release.

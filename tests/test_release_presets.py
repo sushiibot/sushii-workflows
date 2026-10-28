@@ -1,10 +1,11 @@
-"""Offline tests execute the scripts embedded in the reusable workflows."""
+"""Offline behavioral tests for release helpers and workflow orchestration."""
 
 import copy
 import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -25,6 +26,15 @@ def step(name, title, job="deploy"):
     return next(
         s for s in workflow(name)["jobs"][job]["steps"] if s.get("name") == title
     )
+
+
+def helper_source(name, title, job):
+    command = step(name, title, job)["with"]["command"]
+    return (ROOT / "actions/release-tools" / (command + ".py")).read_text()
+
+
+def helper_code(name, title, job):
+    return helper_source(name, title, job) + "\nmain()\n"
 
 
 class PromotionTests(unittest.TestCase):
@@ -75,9 +85,9 @@ class PromotionTests(unittest.TestCase):
             "GITHUB_OUTPUT": str(self.output),
             "GITHUB_STEP_SUMMARY": str(self.summary),
         }
-        self.script = step(
+        self.script = helper_source(
             "release-promote.yml", "Resolve successful staging receipt", "resolve"
-        )["run"]
+        )
         self.scope = {"__name__": "test"}
         exec(compile(self.script, "<promotion workflow>", "exec"), self.scope)  # noqa: S102 - trusted local workflow under test
         self.archive_name = "release.json"
@@ -129,9 +139,10 @@ class PromotionTests(unittest.TestCase):
             GITHUB_RUN_ID="42",
             GITHUB_RUN_ATTEMPT="2",
         )
-        script = step("pull-deploy.yml", "Record successful deployment")["run"]
+        command = step("pull-deploy.yml", "Record successful deployment")["with"]["command"]
         subprocess.run(
-            ["bash", "-e", "-c", script], env=env, check=True, capture_output=True
+            [sys.executable, "-I", str(ROOT / "actions/release-tools/run.py"), command],
+            env=env, check=True, capture_output=True
         )
         self.receipt = json.loads((receipt_dir / "release.json").read_text())
         self.execute()

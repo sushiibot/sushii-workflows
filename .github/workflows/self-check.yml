@@ -43,3 +43,30 @@ jobs:
         run: uv run --python 3.13 --with pyyaml==6.0.2 python -m unittest discover -s tests -v
       - name: Workflow syntax
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+
+  release-tools-smoke:
+    name: Release helper action smoke test
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Exercise helper action and outputs
+        id: identity
+        uses: sushiibot/sushii-workflows/actions/release-tools@e47c3a6d9245d8aea41726ec5a7f36c12221b2d5
+        with:
+          command: build_identity
+        env:
+          REPOSITORY: example/worker
+          IMAGE: ''
+          ARTIFACT: ''
+          DOCKERFILE: Dockerfile
+          BUILD_TARGET: ''
+      - name: Verify composite output forwarding
+        env:
+          IMAGE: ${{ steps.identity.outputs.image }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          BUILD_DATE: ${{ steps.identity.outputs.build_date }}
+        run: |
+          test "$IMAGE" = ghcr.io/example/worker
+          test "$TAG" = "ghcr.io/example/worker:$GITHUB_SHA"
+          test -n "$BUILD_DATE"
