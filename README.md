@@ -165,12 +165,30 @@ This stage uses existing SHA tags and the existing sushii-ci infrastructure-writ
 It preserves a tag, not an immutable image digest. A moved container tag remains outside these guarantees.
 Receipts rely on trusted default-branch workflows and the existing host status publisher.
 They are not signed provenance or an authorization boundary against a compromised project workflow.
-The registry publisher, digest pinning, least-privilege release authorization, and durable receipts remain separate migration work.
+Automatic registry releases now have a separate authenticated path, described below.
 
 Existing callers can continue to use `pull-deploy.yml` without the strict inputs.
 Its default legacy behavior remains available, including the old missing-status shortcut.
 The shared deployer inherits caller token permissions so old callers need not grant new scopes.
 Callers must explicitly restrict permissions. The presets request only the scopes shown in the examples.
+
+## Automatic registry releases
+
+For an enabled private registry target, keep project checks as dependencies of `build-verified.yml`.
+Call the pinned `release-auto.yml` with `target` and `artifact_digest` from the builder output.
+Pass the existing `SUSHII_CI_PRIVATE_KEY` secret and expose the `SUSHII_CI_CLIENT_ID` variable.
+
+The publisher signs an explicit request without using the App key.
+A separate job uses that key to dispatch the private importer immediately after upload.
+Its installation token requests only Actions write on `sushii-ansible`.
+The importer independently verifies the request and build evidence against private registry policy.
+The source job waits for the exact authenticated host receipt.
+
+The CI App must have Actions write access to `sushii-ansible`; accept the updated installation permissions.
+The private importer also uses the App to read source artifacts and publish source commit statuses.
+This reuses the existing trusted-project App key; job token restrictions do not restrict a stolen App key.
+No webhook server or importer cron is required. Manual importer dispatch remains available for recovery.
+Approval-required services keep their existing preset paths during this pilot.
 
 ## Validation
 

@@ -9,6 +9,9 @@ on:
       artifact_digest:
         type: string
         required: true
+    secrets:
+      SUSHII_CI_PRIVATE_KEY:
+        required: true
     outputs:
       deployed:
         value: ${{ jobs.wait.outputs.deployed }}
@@ -81,8 +84,39 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: echo "[Release request and result]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"
 
-  wait:
+  dispatch:
     needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Mint importer dispatch token
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SUSHII_CI_CLIENT_ID }}
+          private-key: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+          owner: sushiibot
+          repositories: sushii-ansible
+          permission-actions: write
+      - name: Notify private release importer
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          payload = {"ref": "main", "inputs": {
+              "source_repository": os.environ["GITHUB_REPOSITORY"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "target": os.environ["TARGET"]}}
+          subprocess.run(["gh", "api", "--method", "POST",
+                          "repos/sushiibot/sushii-ansible/actions/workflows/import-release.yml/dispatches",
+                          "--input", "-"], input=json.dumps(payload), text=True, check=True)
+          PY
+
+  wait:
+    needs: dispatch
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:

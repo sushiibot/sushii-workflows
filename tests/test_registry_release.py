@@ -81,6 +81,26 @@ class RegistryReleaseTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.wait([self.status(state="error")])
 
+    def test_dispatch_uses_context_and_fixed_destination(self):
+        with patch.dict(os.environ, self.env), patch("subprocess.run") as command:
+            exec(python_step("Notify private release importer", "dispatch"), {})
+        args, kwargs = command.call_args
+        self.assertIn("repos/sushiibot/sushii-ansible/actions/workflows/import-release.yml/dispatches", args[0])
+        self.assertTrue(kwargs["check"])
+        self.assertEqual(json.loads(kwargs["input"]), {"ref": "main", "inputs": {
+            "source_repository": "example/worker", "run_id": "123", "target": "production"}})
+        jobs = workflow("_release-request.yml")["jobs"]
+        self.assertEqual(jobs["dispatch"]["needs"], "publish")
+        self.assertEqual(jobs["wait"]["needs"], "dispatch")
+        self.assertEqual(jobs["dispatch"]["permissions"], {})
+        token = step("_release-request.yml", "Mint importer dispatch token", "dispatch")["with"]
+        self.assertEqual(token["repositories"], "sushii-ansible")
+        self.assertEqual({k: v for k, v in token.items() if k.startswith("permission-")},
+                         {"permission-actions": "write"})
+        self.assertFalse(any("checkout@" in x.get("uses", "") for x in jobs["dispatch"]["steps"]))
+        self.assertNotIn("secrets.", str(jobs["publish"]))
+        self.assertNotIn("secrets.", str(jobs["wait"]))
+
     def test_isolated_signers_no_checkout_or_caller_scripts(self):
         for job in (workflow("build-verified.yml")["jobs"]["attest"],
                     workflow("_release-request.yml")["jobs"]["publish"]):
