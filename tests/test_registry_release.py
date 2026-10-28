@@ -81,6 +81,57 @@ class RegistryReleaseTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.wait([self.status(state="error")])
 
+    def test_github_actions_mode_retains_unsigned_placeholders(self):
+        self.env['PROVENANCE'] = 'github-actions'
+        self.publish()
+        directory = Path(self.tmp.name) / 'release-request'
+        for name in ('intent.sigstore.json', 'build.sigstore.json'):
+            self.assertEqual(json.loads((directory / name).read_text()), {})
+        self.assertEqual((directory / 'artifact-manifest.json').read_bytes(), self.manifest)
+
+    def test_bundle_publisher_binds_asset_metadata(self):
+        self.env.update(PROVENANCE='github-actions', ARTIFACT_KIND='github-release-bundle',
+                        RELEASE_ID='10', RELEASE_ASSET_ID='20')
+        metadata = dict(id=20, digest=self.digest, size=123, name='public-assets.tar.gz')
+        with patch.dict(os.environ, self.env), patch('subprocess.check_output', return_value=json.dumps(metadata)):
+            exec(python_step('Construct release intent', 'publish'), {})
+        directory = Path(self.tmp.name) / 'release-request'
+        request = json.loads((directory / 'request.json').read_text())
+        self.assertEqual((request['schema_version'], request['release_id'], request['release_asset_id']), (2, 10, 20))
+        self.assertEqual(json.loads((directory / 'artifact-manifest.json').read_text()),
+                         dict(kind='github-release-bundle', release_id=10, release_asset_id=20,
+                              name='public-assets.tar.gz', size=123))
+
+    def test_bundle_rejects_unmatched_digest(self):
+        self.env.update(PROVENANCE='github-actions', ARTIFACT_KIND='github-release-bundle',
+                        RELEASE_ID='10', RELEASE_ASSET_ID='20')
+        metadata = dict(id=20, digest='sha256:'+'f'*64, size=123, name='public-assets.tar.gz')
+        with patch.dict(os.environ, self.env), patch('subprocess.check_output', return_value=json.dumps(metadata)):
+            with self.assertRaises(AssertionError):
+                exec(python_step('Construct release intent', 'publish'), {})
+
+    def test_bundle_rejects_attested_mode(self):
+        self.env.update(PROVENANCE='attested', ARTIFACT_KIND='github-release-bundle',
+                        RELEASE_ID='10', RELEASE_ASSET_ID='20')
+        with patch.dict(os.environ, self.env), self.assertRaises(AssertionError):
+            exec(python_step('Construct release intent', 'publish'), {})
+
+    def test_named_builds_use_exact_source_and_distinct_tags(self):
+        job = workflow('build-verified.yml')['jobs']['build']
+        script = next(s['run'] for s in job['steps'] if s.get('name') == 'Derive image identity')
+        code = script.split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        env = dict(self.env, IMAGE='ghcr.io/example/custom', ARTIFACT='workspace',
+                   REPOSITORY='example/worker', DOCKERFILE='packages/app/Dockerfile', BUILD_TARGET='workspace')
+        with patch.dict(os.environ, env):
+            exec(code, {})
+        self.assertIn('tag=ghcr.io/example/custom:'+'a'*40+'-workspace', Path(self.env['GITHUB_OUTPUT']).read_text())
+        build = next(s for s in job['steps'] if s.get('name') == 'Build exact source')['with']
+        self.assertEqual(build['context'], 'https://github.com/${{ github.repository }}.git#${{ github.sha }}')
+        self.assertEqual(build['target'], '${{ inputs.build_target }}')
+        env['DOCKERFILE'] = '../Dockerfile'
+        with patch.dict(os.environ, env), self.assertRaises(AssertionError):
+            exec(code, {})
+
     def test_dispatch_uses_context_and_fixed_destination(self):
         with patch.dict(os.environ, self.env), patch("subprocess.run") as command:
             exec(python_step("Notify private release importer", "dispatch"), {})

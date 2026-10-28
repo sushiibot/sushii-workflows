@@ -213,3 +213,25 @@ A live pilot must still exercise GitHub approval, artifact transfer, and host st
 - [Reusable workflow permissions and nesting](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)
 - [Deployment environments and approval rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
 - [Workflow artifact API](https://docs.github.com/en/rest/actions/artifacts)
+
+### Additional registry artifacts
+
+`build-verified.yml` supports optional `image_name`, `dockerfile`, `build_target`, and
+`artifact_name` inputs. Give multiple builds in one run distinct artifact names and pass
+those same names to `release-auto.yml`. Project jobs still own their check dependencies.
+
+For repositories without artifact attestations, set the builder's `attest: false` and
+publisher's `provenance: github-actions`. The private registry must explicitly authorize
+this mode. It verifies retained GitHub Actions evidence and trusts the source workflow;
+this mode does not provide independent builder attestations. Evidence is retained for
+90 days, subject to repository limits. Hosts that lag beyond retention need audited recovery.
+
+For release bundles, pass `artifact_kind: github-release-bundle`, `provenance: github-actions`,
+`release_id`, `release_asset_id`, and `artifact_digest`. IDs are strings at the reusable
+workflow boundary. Obtain the digest from the uploaded asset, including when reusing an
+existing release. `allow_manual: true` supports default-branch workflow dispatch only when
+the private policy also allows it. It does not replace environment approval.
+
+New registry callers must grant `packages: read` to the release job, even for bundles.
+The publisher uses this permission to read private OCI manifests when applicable.
+Approved promotion presets retain their existing behavior.

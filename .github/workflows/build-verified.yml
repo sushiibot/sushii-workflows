@@ -2,10 +2,27 @@ name: Build verified image
 
 on:
   workflow_call:
+    inputs:
+      image_name:
+        type: string
+        default: ''
+      dockerfile:
+        type: string
+        default: Dockerfile
+      build_target:
+        type: string
+        default: ''
+      artifact_name:
+        description: Unique build evidence and tag suffix for multiple images in one run
+        type: string
+        default: ''
+      attest:
+        type: boolean
+        default: true
     outputs:
       artifact_digest:
         description: Immutable digest produced and attested by this build
-        value: ${{ jobs.attest.outputs.digest }}
+        value: ${{ jobs.build.outputs.digest }}
 
 permissions: {}
 
@@ -25,7 +42,24 @@ jobs:
         id: identity
         env:
           REPOSITORY: ${{ github.repository }}
-        run: echo "image=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          IMAGE: ${{ inputs.image_name }}
+          ARTIFACT: ${{ inputs.artifact_name }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          BUILD_TARGET: ${{ inputs.build_target }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          image = os.environ['IMAGE'] or 'ghcr.io/' + os.environ['REPOSITORY'].lower()
+          assert re.fullmatch(r'ghcr\.io/[a-z0-9._-]+/[a-z0-9._/-]+', image)
+          artifact = os.environ['ARTIFACT']
+          assert not artifact or re.fullmatch(r'[a-z0-9][a-z0-9-]*', artifact)
+          path = os.environ['DOCKERFILE']
+          assert re.fullmatch(r'[A-Za-z0-9_./-]+', path) and not path.startswith('/') and '..' not in path.split('/')
+          assert not os.environ['BUILD_TARGET'] or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', os.environ['BUILD_TARGET'])
+          suffix = '-' + artifact if artifact else ''
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'image={image}\ntag={image}:{os.environ["GITHUB_SHA"]}{suffix}\n')
+          PY
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -38,12 +72,15 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: https://github.com/${{ github.repository }}.git#${{ github.sha }}
+          file: ${{ inputs.dockerfile }}
+          target: ${{ inputs.build_target }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.identity.outputs.image }}:${{ github.sha }}
+          tags: ${{ steps.identity.outputs.tag }}
           build-args: GIT_HASH=${{ github.sha }}
 
   attest:
+    if: inputs.attest
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -67,7 +104,7 @@ jobs:
           cp "$BUNDLE" "$RUNNER_TEMP/build-evidence/build.sigstore.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: build-provenance-${{ github.run_attempt }}
+          name: build-provenance-${{ inputs.artifact_name != '' && format('{0}-', inputs.artifact_name) || '' }}${{ github.run_attempt }}
           path: ${{ runner.temp }}/build-evidence/build.sigstore.json
           if-no-files-found: error
           retention-days: 30
