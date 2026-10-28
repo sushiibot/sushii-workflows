@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -138,7 +139,155 @@ class RegistryReleaseTests(unittest.TestCase):
         jobs = workflow("_release-request.yml")["jobs"]
         self.assertEqual(jobs["publish"]["environment"], "${{ inputs.environment }}")
         self.assertEqual(jobs["dispatch"]["needs"], "publish")
-        self.assertIn('[[ "$APPROVAL" == false ]]', wrapper["registry-inputs"]["steps"][0]["run"])
+        self.assertEqual(wrapper["registry"]["with"]["require_approval"], "${{ inputs.require_approval }}")
+        self.assertEqual(jobs["publish"]["needs"], "preflight")
+
+    def approved_fixture(self):
+        self.env.update(REQUIRE_APPROVAL='true', ENVIRONMENT='production',
+                        ALLOW_MANUAL='false', GITHUB_EVENT_NAME='push', GITHUB_RUN_ATTEMPT='1')
+        environment = dict(id=10, name='production', protection_rules=[
+            dict(type='required_reviewers', reviewers=[dict(type='User', reviewer=dict(id=20))])])
+        history = [dict(state='approved', user=dict(id=20),
+                        environments=[dict(id=10, name='production')])]
+        return environment, history
+
+    def publish_approved(self, environment, history):
+        with patch('subprocess.check_output', side_effect=[json.dumps(environment), json.dumps(history)]):
+            self.publish()
+
+    def test_approved_intent_binds_environment_and_reviewer(self):
+        self.publish_approved(*self.approved_fixture())
+        request = json.loads((Path(self.tmp.name) / 'release-request/request.json').read_text())
+        self.assertEqual(request['schema_version'], 3)
+        self.assertEqual(request['approval'], dict(environment='production', environment_id=10, reviewer_id=20))
+        self.assertEqual(request['run_attempt'], 1)
+
+    def test_approval_rejects_reruns_manual_unsigned_and_bundles(self):
+        for key, value in [('GITHUB_RUN_ATTEMPT', '2'), ('GITHUB_EVENT_NAME', 'workflow_dispatch'),
+                           ('PROVENANCE', 'github-actions'), ('ARTIFACT_KIND', 'github-release-bundle'),
+                           ('ALLOW_MANUAL', 'true'), ('ENVIRONMENT', '')]:
+            with self.subTest(key=key):
+                environment, history = self.approved_fixture()
+                self.env[key] = value
+                with self.assertRaises(AssertionError):
+                    self.publish_approved(environment, history)
+                self.env.pop(key)
+        self.assertFalse((Path(self.tmp.name) / 'release-request/request.json').exists())
+
+    def test_approval_rejects_removed_reviewers_team_or_recreated_environment(self):
+        environment, history = self.approved_fixture()
+        variants = []
+        for field, value in [('id', 11), ('id', True), ('name', 'other'), ('protection_rules', [])]:
+            variants.append(dict(environment, **{field: value}))
+        for reviewer in [dict(type='Team', reviewer=dict(id=20)), dict(type='User', reviewer=dict(id=30)),
+                         dict(type='User', reviewer=dict(id=True))]:
+            variants.append(dict(environment, protection_rules=[dict(type='required_reviewers', reviewers=[reviewer])]))
+        for changed in variants:
+            with self.subTest(environment=changed), self.assertRaises(AssertionError):
+                self.publish_approved(changed, history)
+        self.assertFalse((Path(self.tmp.name) / 'release-request/request.json').exists())
+
+    def test_approval_rejects_absent_rejected_ambiguous_or_foreign_history(self):
+        environment, history = self.approved_fixture()
+        variants = [[], history * 2, [dict(history[0], state='rejected')],
+                    [dict(history[0], user=dict(id=99))],
+                    [dict(history[0], environments=[dict(id=99, name='other')])],
+                    [dict(history[0], environments=[dict(id=99, name='production')])],
+                    history + [dict(history[0], state='rejected')]]
+        for changed in variants:
+            with self.subTest(history=changed), self.assertRaises(AssertionError):
+                self.publish_approved(environment, changed)
+        self.assertFalse((Path(self.tmp.name) / 'release-request/request.json').exists())
+
+    def test_preflight_rejects_missing_gate_and_replays_before_publish(self):
+        environment, _ = self.approved_fixture()
+        code = step('_release-request.yml', 'Validate approval contract before the gate', 'preflight')['run']
+        code = code.split("python3 - <<'PYCODE'\n", 1)[1].rsplit('\nPYCODE', 1)[0]
+        self.env.update(PROVENANCE='attested', ARTIFACT_KIND='oci')
+        with patch.dict(os.environ, self.env), patch('subprocess.check_output', return_value=json.dumps(environment)):
+            exec(code, {})
+        for changes in [dict(GITHUB_RUN_ATTEMPT='2'), dict(PROVENANCE='github-actions'),
+                        dict(ARTIFACT_KIND='github-release-bundle'), dict(ENVIRONMENT='')]:
+            with patch.dict(os.environ, dict(self.env, **changes)), self.assertRaises(AssertionError):
+                exec(code, {})
+        environment['protection_rules'][0]['reviewers'] = []
+        with patch.dict(os.environ, self.env), patch('subprocess.check_output', return_value=json.dumps(environment)), self.assertRaises(AssertionError):
+            exec(code, {})
+
+    def test_registry_staged_preserves_digest_and_requires_host_success(self):
+        jobs = workflow('release-staged.yml')['jobs']
+        production = jobs['registry-production']
+        self.assertEqual(production['needs'], 'registry-staging')
+        self.assertEqual(production['if'], "needs.registry-staging.outputs.deployed == 'true'")
+        self.assertTrue(production['with']['require_approval'])
+        for name in ('registry-staging', 'registry-production'):
+            self.assertEqual(jobs[name]['with']['artifact_digest'], '${{ inputs.artifact_digest }}')
+            self.assertEqual(jobs[name]['with']['image_name'], '${{ inputs.image_name }}')
+        self.assertNotIn('concurrency', production)
+
+    def test_staged_rejects_partial_and_mixed_mode_inputs(self):
+        script = step('release-staged.yml', 'Validate staged release mode', 'inputs')['run']
+        env = dict(os.environ, STAGING_TARGET='staging', PRODUCTION_TARGET='production',
+                   DIGEST=self.digest, IMAGE='', ARTIFACT='', VERSION='', LEGACY_PLACEMENT='',
+                   STAGING_ENVIRONMENT='staging', PRODUCTION_ENVIRONMENT='production')
+        def run(changes):
+            return subprocess.run(['bash', '-e', '-c', script], env=dict(env, **changes),
+                                  capture_output=True).returncode
+        self.assertEqual(run({}), 0)
+        for changes in [dict(STAGING_TARGET=''), dict(PRODUCTION_TARGET=''), dict(DIGEST=''),
+                        dict(PRODUCTION_TARGET='staging'), dict(VERSION='abcdef0'),
+                        dict(LEGACY_PLACEMENT='bots/example'), dict(PRODUCTION_ENVIRONMENT=''),
+                        dict(PRODUCTION_ENVIRONMENT='staging')]:
+            with self.subTest(changes=changes):
+                self.assertNotEqual(run(changes), 0)
+        self.assertEqual(run(dict(STAGING_TARGET='', PRODUCTION_TARGET='', DIGEST='', VERSION='abcdef0')), 0)
+        self.assertNotEqual(run(dict(STAGING_TARGET='', PRODUCTION_TARGET='', DIGEST='')), 0)
+
+    def test_build_artifact_cannot_overwrite_generated_intent(self):
+        self.publish()
+        request = Path(self.tmp.name) / 'release-request/request.json'
+        original = request.read_bytes()
+        evidence_dir = Path(self.tmp.name) / 'release-build-evidence'
+        evidence_dir.mkdir()
+        evidence = evidence_dir / 'build.sigstore.json'
+        evidence.write_text('{}')
+        malicious = evidence_dir / 'request.json'
+        malicious.write_text('{"schema_version": 3}')
+        code = python_step('Accept only build evidence from the artifact', 'publish')
+        with patch.dict(os.environ, self.env), self.assertRaises(AssertionError):
+            exec(code, {})
+        self.assertEqual(request.read_bytes(), original)
+        malicious.unlink()
+        evidence.unlink()
+        evidence.symlink_to(request)
+        with patch.dict(os.environ, self.env), self.assertRaises(AssertionError):
+            exec(code, {})
+        evidence.unlink()
+        evidence.write_text('{}')
+        with patch.dict(os.environ, self.env):
+            exec(code, {})
+        self.assertEqual(request.read_bytes(), original)
+        self.assertEqual((request.parent / 'build.sigstore.json').read_text(), '{}')
+        download = step('_release-request.yml', "Fetch this run's build evidence", 'publish')
+        self.assertEqual(download['with']['path'], '${{ runner.temp }}/release-build-evidence')
+        steps = [s['name'] for s in workflow('_release-request.yml')['jobs']['publish']['steps']]
+        self.assertLess(steps.index('Accept only build evidence from the artifact'),
+                        steps.index('Sign explicit release intent'))
+
+    def test_auto_rejects_mixed_and_incomplete_registry_inputs(self):
+        script = step('release-auto.yml', 'Validate registry inputs', 'registry-inputs')['run']
+        env = dict(os.environ, TARGET='production', DIGEST=self.digest, REGISTRY_ARTIFACT='',
+                   MANUAL='false', PROVENANCE='attested', SERVICE='', HOST='', VERSION='')
+        def run(changes):
+            return subprocess.run(['bash', '-e', '-c', script], env=dict(env, **changes),
+                                  capture_output=True).returncode
+        self.assertEqual(run({}), 0)
+        for changes in [dict(TARGET=''), dict(DIGEST=''), dict(SERVICE='bots/foo'),
+                        dict(HOST='apps'), dict(VERSION='abcdef0'), dict(MANUAL='true')]:
+            self.assertNotEqual(run(changes), 0)
+        self.assertEqual(run(dict(TARGET='', DIGEST='', VERSION='abcdef0')), 0)
+        self.assertEqual(run(dict(MANUAL='true', PROVENANCE='github-actions')), 0)
+        self.assertNotEqual(run(dict(TARGET='', DIGEST='', REGISTRY_ARTIFACT='ghcr.io/org/app')), 0)
 
     def test_dispatch_uses_context_and_fixed_destination(self):
         with patch.dict(os.environ, self.env), patch("subprocess.run") as command:

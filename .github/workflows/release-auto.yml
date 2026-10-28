@@ -73,22 +73,27 @@ permissions: {}
 
 jobs:
   registry-inputs:
-    if: inputs.target != ''
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - name: Require the automatic registry contract
+      - name: Validate registry inputs
         env:
-          APPROVAL: ${{ inputs.require_approval }}
+          TARGET: ${{ inputs.target }}
+          DIGEST: ${{ inputs.artifact_digest }}
+          REGISTRY_ARTIFACT: ${{ inputs.image_name }}${{ inputs.artifact_name }}${{ inputs.release_id }}${{ inputs.release_asset_id }}
           MANUAL: ${{ inputs.allow_manual }}
           PROVENANCE: ${{ inputs.provenance }}
           SERVICE: ${{ inputs.service }}
           HOST: ${{ inputs.host }}
           VERSION: ${{ inputs.image_version }}
         run: |
-          [[ "$APPROVAL" == false ]]
-          [[ "$MANUAL" == false || "$PROVENANCE" == github-actions ]]
-          [[ -z "$SERVICE$HOST$VERSION" ]]
+          if [[ -n "$TARGET" ]]; then
+            [[ -n "$DIGEST" ]]
+            [[ "$MANUAL" == false || "$PROVENANCE" == github-actions ]]
+            [[ -z "$SERVICE$HOST$VERSION" ]]
+          else
+            [[ -z "$DIGEST$REGISTRY_ARTIFACT" ]]
+          fi
 
   registry:
     needs: registry-inputs
@@ -105,6 +110,7 @@ jobs:
       target: ${{ inputs.target }}
       artifact_digest: ${{ inputs.artifact_digest }}
       environment: ${{ inputs.environment }}
+      require_approval: ${{ inputs.require_approval }}
       allow_manual: ${{ inputs.allow_manual }}
       provenance: ${{ inputs.provenance }}
       artifact_kind: ${{ inputs.artifact_kind }}
@@ -116,7 +122,7 @@ jobs:
       SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
 
   approval-config:
-    if: inputs.require_approval && (github.event_name == 'push' || (inputs.allow_manual && github.event_name == 'workflow_dispatch')) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: inputs.target == '' && inputs.require_approval && (github.event_name == 'push' || (inputs.allow_manual && github.event_name == 'workflow_dispatch')) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       actions: read
     uses: ./.github/workflows/_release-approval.yml
@@ -124,10 +130,10 @@ jobs:
       production_environment: ${{ inputs.environment }}
 
   deploy:
-    needs: approval-config
+    needs: [registry-inputs, approval-config]
     if: >-
       !cancelled() &&
-      inputs.target == '' &&
+      inputs.target == '' && needs.registry-inputs.result == 'success' &&
       (github.event_name == 'push' || (inputs.allow_manual && github.event_name == 'workflow_dispatch')) &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       (needs.approval-config.result == 'success' || (!inputs.require_approval && needs.approval-config.result == 'skipped'))

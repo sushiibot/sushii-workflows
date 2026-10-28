@@ -13,6 +13,9 @@ on:
         description: Optional project environment gate before publishing release intent
         type: string
         default: ""
+      require_approval:
+        type: boolean
+        default: false
       allow_manual:
         type: boolean
         default: false
@@ -44,7 +47,42 @@ on:
 permissions: {}
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Validate approval contract before the gate
+        env:
+          REQUIRE_APPROVAL: ${{ inputs.require_approval }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          PROVENANCE: ${{ inputs.provenance }}
+          ARTIFACT_KIND: ${{ inputs.artifact_kind }}
+          ALLOW_MANUAL: ${{ inputs.allow_manual }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess, urllib.parse
+          if os.environ['REQUIRE_APPROVAL'] == 'true':
+              assert os.environ['PROVENANCE'] == 'attested'
+              assert os.environ['ARTIFACT_KIND'] == 'oci'
+              assert os.environ['ALLOW_MANUAL'] == 'false'
+              assert os.environ['GITHUB_EVENT_NAME'] == 'push'
+              assert os.environ['GITHUB_RUN_ATTEMPT'] == '1', 'Approved releases require a fresh push run'
+              name = os.environ['ENVIRONMENT']
+              assert name, 'An approval environment is required'
+              path = f"repos/{os.environ['GITHUB_REPOSITORY']}/environments/{urllib.parse.quote(name, safe='')}"
+              environment = json.loads(subprocess.check_output(['gh', 'api', path], text=True))
+              assert environment['name'] == name
+              assert type(environment['id']) is int and environment['id'] > 0
+              rules = [r for r in environment['protection_rules'] if r['type'] == 'required_reviewers']
+              assert len(rules) == 1 and rules[0]['reviewers'], 'Configure required individual reviewers'
+              assert all(r['type'] == 'User' and type(r['reviewer']['id']) is int and r['reviewer']['id'] > 0
+                         for r in rules[0]['reviewers']), 'Only individual reviewers are supported'
+          PYCODE
+
   publish:
+    needs: preflight
     environment: ${{ inputs.environment }}
     if: (github.event_name == 'push' || (inputs.allow_manual && inputs.provenance == 'github-actions' && github.event_name == 'workflow_dispatch')) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
@@ -57,6 +95,9 @@ jobs:
     steps:
       - name: Construct release intent
         env:
+          REQUIRE_APPROVAL: ${{ inputs.require_approval }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          ALLOW_MANUAL: ${{ inputs.allow_manual }}
           TARGET: ${{ inputs.target }}
           DIGEST: ${{ inputs.artifact_digest }}
           PROVENANCE: ${{ inputs.provenance }}
@@ -76,6 +117,40 @@ jobs:
           request = dict(schema_version=1, target=target, artifact_digest=digest,
                          source_sha=os.environ['GITHUB_SHA'], run_id=int(os.environ['GITHUB_RUN_ID']),
                          run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
+          mode = os.environ.get('PROVENANCE', 'attested')
+          kind = os.environ.get('ARTIFACT_KIND', 'oci')
+          if os.environ.get('REQUIRE_APPROVAL', 'false') == 'true':
+              import subprocess
+              assert mode == 'attested' and kind == 'oci', 'Approval requires attested OCI evidence'
+              assert os.environ.get('ALLOW_MANUAL', 'false') == 'false'
+              assert os.environ['GITHUB_EVENT_NAME'] == 'push' and request['run_attempt'] == 1
+              name = os.environ['ENVIRONMENT']
+              assert name
+              repository = os.environ['GITHUB_REPOSITORY']
+              def api(path):
+                  return json.loads(subprocess.check_output(['gh', 'api', path], text=True))
+              environment = api(f"repos/{repository}/environments/{urllib.parse.quote(name, safe='')}")
+              assert environment['name'] == name
+              environment_id = environment['id']
+              assert type(environment_id) is int and environment_id > 0
+              rules = [r for r in environment['protection_rules'] if r['type'] == 'required_reviewers']
+              assert len(rules) == 1 and rules[0]['reviewers']
+              reviewers = rules[0]['reviewers']
+              assert all(r['type'] == 'User' and type(r['reviewer']['id']) is int and r['reviewer']['id'] > 0
+                         for r in reviewers), 'Only individual reviewers are supported'
+              reviewer_ids = {r['reviewer']['id'] for r in reviewers}
+              history = api(f"repos/{repository}/actions/runs/{request['run_id']}/approvals")
+              decisions = [d for d in history if any(e.get('id') == environment_id or e.get('name') == name
+                                                    for e in d.get('environments', []))]
+              assert len(decisions) == 1, 'Missing or ambiguous approval history'
+              decision = decisions[0]
+              assert decision['state'] == 'approved'
+              assert any(e.get('id') == environment_id and e.get('name') == name
+                         for e in decision['environments'])
+              reviewer_id = decision['user']['id']
+              assert type(reviewer_id) is int and reviewer_id in reviewer_ids
+              request.update(schema_version=3, approval=dict(environment=name, environment_id=environment_id,
+                                                            reviewer_id=reviewer_id))
           directory = Path(os.environ['RUNNER_TEMP']) / 'release-request'
           directory.mkdir()
           (directory / 'request.json').write_text(json.dumps(request, sort_keys=True) + '\n')
@@ -125,7 +200,22 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: build-provenance-${{ inputs.artifact_name != '' && format('{0}-', inputs.artifact_name) || '' }}${{ github.run_attempt }}
-          path: ${{ runner.temp }}/release-request
+          path: ${{ runner.temp }}/release-build-evidence
+      - name: Accept only build evidence from the artifact
+        if: inputs.provenance == 'attested'
+        run: |
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          directory = Path(os.environ['RUNNER_TEMP']) / 'release-build-evidence'
+          entries = list(directory.iterdir())
+          source = directory / 'build.sigstore.json'
+          assert entries == [source] and source.is_file() and not source.is_symlink(), 'Unexpected build artifact contents'
+          assert 0 < source.stat().st_size <= 8 * 1024 * 1024, 'Invalid build evidence size'
+          destination = Path(os.environ['RUNNER_TEMP']) / 'release-request/build.sigstore.json'
+          with destination.open('xb') as output, source.open('rb') as evidence:
+              shutil.copyfileobj(evidence, output)
+          PY
       - name: Sign explicit release intent
         if: inputs.provenance == 'attested'
         id: intent

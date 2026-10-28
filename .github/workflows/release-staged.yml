@@ -6,7 +6,23 @@ on:
       image_version:
         description: "Built SHA tag from this push; used unchanged for both deployments"
         type: string
-        required: true
+        default: ""
+      staging_target:
+        description: Logical registry staging target; use with production_target and artifact_digest
+        type: string
+        default: ""
+      production_target:
+        type: string
+        default: ""
+      artifact_digest:
+        type: string
+        default: ""
+      image_name:
+        type: string
+        default: ""
+      artifact_name:
+        type: string
+        default: ""
       staging_service:
         description: "Defaults to repository variable STAGING_SERVICE"
         type: string
@@ -40,8 +56,75 @@ on:
 permissions: {}
 
 jobs:
+  inputs:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Validate staged release mode
+        env:
+          STAGING_TARGET: ${{ inputs.staging_target }}
+          PRODUCTION_TARGET: ${{ inputs.production_target }}
+          DIGEST: ${{ inputs.artifact_digest }}
+          IMAGE: ${{ inputs.image_name }}
+          ARTIFACT: ${{ inputs.artifact_name }}
+          VERSION: ${{ inputs.image_version }}
+          LEGACY_PLACEMENT: ${{ inputs.staging_service }}${{ inputs.staging_host }}${{ inputs.production_service }}${{ inputs.production_host }}
+          STAGING_ENVIRONMENT: ${{ inputs.staging_environment }}
+          PRODUCTION_ENVIRONMENT: ${{ inputs.production_environment }}
+        run: |
+          if [[ -n "$STAGING_TARGET$PRODUCTION_TARGET$DIGEST$IMAGE$ARTIFACT" ]]; then
+            [[ -n "$STAGING_TARGET" && -n "$PRODUCTION_TARGET" && -n "$DIGEST" ]]
+            [[ "$STAGING_TARGET" != "$PRODUCTION_TARGET" ]]
+            [[ -z "$VERSION$LEGACY_PLACEMENT" ]]
+            [[ -n "$PRODUCTION_ENVIRONMENT" && "$PRODUCTION_ENVIRONMENT" != "$STAGING_ENVIRONMENT" ]]
+          else
+            [[ -n "$VERSION" ]]
+          fi
+
+  registry-staging:
+    needs: inputs
+    if: inputs.staging_target != ''
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      statuses: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_release-request.yml
+    with:
+      target: ${{ inputs.staging_target }}
+      artifact_digest: ${{ inputs.artifact_digest }}
+      image_name: ${{ inputs.image_name }}
+      artifact_name: ${{ inputs.artifact_name }}
+      environment: ${{ inputs.staging_environment }}
+    secrets:
+      SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+
+  registry-production:
+    needs: registry-staging
+    if: needs.registry-staging.outputs.deployed == 'true'
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      statuses: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_release-request.yml
+    with:
+      target: ${{ inputs.production_target }}
+      artifact_digest: ${{ inputs.artifact_digest }}
+      image_name: ${{ inputs.image_name }}
+      artifact_name: ${{ inputs.artifact_name }}
+      environment: ${{ inputs.production_environment }}
+      require_approval: true
+    secrets:
+      SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+
   approval-config:
-    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: inputs
+    if: inputs.staging_target == '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       actions: read
     uses: ./.github/workflows/_release-approval.yml
