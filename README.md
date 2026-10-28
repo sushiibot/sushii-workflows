@@ -234,4 +234,53 @@ the private policy also allows it. It does not replace environment approval.
 
 New registry callers must grant `packages: read` to the release job, even for bundles.
 The publisher uses this permission to read private OCI manifests when applicable.
-Approved promotion presets retain their existing behavior.
+Legacy promotion callers retain their existing behavior. The registry approval contract follows.
+
+### Approved registry releases
+
+Project checks still gate `build-verified.yml`. The release job receives its exact digest.
+Use a reviewed immutable workflow SHA in each caller.
+
+```yaml
+release:
+  needs: docker-build
+  permissions:
+    contents: read
+    actions: read
+    packages: read
+    statuses: write
+    id-token: write
+    attestations: write
+  uses: sushiibot/sushii-workflows/.github/workflows/release-auto.yml@WORKFLOW_COMMIT_SHA
+  with:
+    target: production
+    artifact_digest: ${{ needs.docker-build.outputs.artifact_digest }}
+    environment: production
+    require_approval: true
+  secrets:
+    SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
+```
+
+For staging first, use `release-staged.yml` with the same permissions and secret:
+
+```yaml
+with:
+  staging_target: staging
+  production_target: production
+  artifact_digest: ${{ needs.docker-build.outputs.artifact_digest }}
+```
+
+Set `image_name` when the image repository differs from `ghcr.io/<source repository>`.
+The staged preset waits for the exact staging receipt before it requests production approval.
+Both environments receive the same image digest.
+
+The private target must authorize approved releases and pin this publisher version.
+Its environment ID and reviewer IDs must match the source repository.
+An administrative bypass without an actual approved review does not authorize a registry release.
+Approved registry requests require attested OCI images and first-attempt push runs.
+Reruns, manual source dispatch, bundles, and relaxed provenance are not supported for approved targets.
+If a source run fails or is superseded, start a fresh push run.
+
+A manual entry point can link to the original CI run for approval.
+It must not substitute another image or approve the gate automatically.
+The legacy `release-promote.yml` contract does not promote registry records across runs.
