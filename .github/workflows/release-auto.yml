@@ -82,14 +82,13 @@ jobs:
           APPROVAL: ${{ inputs.require_approval }}
           MANUAL: ${{ inputs.allow_manual }}
           PROVENANCE: ${{ inputs.provenance }}
-          ENVIRONMENT: ${{ inputs.environment }}
           SERVICE: ${{ inputs.service }}
           HOST: ${{ inputs.host }}
           VERSION: ${{ inputs.image_version }}
         run: |
           [[ "$APPROVAL" == false ]]
           [[ "$MANUAL" == false || "$PROVENANCE" == github-actions ]]
-          [[ -z "$ENVIRONMENT$SERVICE$HOST$VERSION" ]]
+          [[ -z "$SERVICE$HOST$VERSION" ]]
 
   registry:
     needs: registry-inputs
@@ -105,6 +104,7 @@ jobs:
     with:
       target: ${{ inputs.target }}
       artifact_digest: ${{ inputs.artifact_digest }}
+      environment: ${{ inputs.environment }}
       allow_manual: ${{ inputs.allow_manual }}
       provenance: ${{ inputs.provenance }}
       artifact_kind: ${{ inputs.artifact_kind }}

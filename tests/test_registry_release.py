@@ -132,6 +132,14 @@ class RegistryReleaseTests(unittest.TestCase):
         with patch.dict(os.environ, env), self.assertRaises(AssertionError):
             exec(code, {})
 
+    def test_environment_gate_precedes_request_and_dispatch(self):
+        wrapper = workflow("release-auto.yml")["jobs"]
+        self.assertEqual(wrapper["registry"]["with"]["environment"], "${{ inputs.environment }}")
+        jobs = workflow("_release-request.yml")["jobs"]
+        self.assertEqual(jobs["publish"]["environment"], "${{ inputs.environment }}")
+        self.assertEqual(jobs["dispatch"]["needs"], "publish")
+        self.assertIn('[[ "$APPROVAL" == false ]]', wrapper["registry-inputs"]["steps"][0]["run"])
+
     def test_dispatch_uses_context_and_fixed_destination(self):
         with patch.dict(os.environ, self.env), patch("subprocess.run") as command:
             exec(python_step("Notify private release importer", "dispatch"), {})
