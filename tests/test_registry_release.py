@@ -33,6 +33,22 @@ class RegistryReleaseTests(unittest.TestCase):
         with patch.dict(os.environ, self.env), patch("urllib.request.urlopen", side_effect=responses):
             exec(python_step("Construct release intent", "publish"), {})
 
+    def test_builder_supplies_trusted_utc_build_date(self):
+        from datetime import datetime, timezone
+        script = step("build-verified.yml", "Derive image identity", "build")["run"]
+        script = script.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        before = datetime.now(timezone.utc).replace(microsecond=0)
+        with patch.dict(os.environ, {**self.env, "REPOSITORY": "example/worker", "IMAGE": "", "ARTIFACT": "",
+                                    "DOCKERFILE": "Dockerfile", "BUILD_TARGET": "", "BUILD_DATE": "untrusted"}):
+            exec(script, {})
+        values = dict(line.split("=", 1) for line in Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines())
+        actual = datetime.fromisoformat(values["build_date"].replace("Z", "+00:00"))
+        self.assertGreaterEqual(actual, before)
+        self.assertLessEqual(actual, datetime.now(timezone.utc))
+        args = step("build-verified.yml", "Build exact source", "build")["with"]["build-args"]
+        self.assertIn("BUILD_DATE=${{ steps.identity.outputs.build_date }}", args)
+        self.assertIn("GIT_HASH=${{ github.sha }}", args)
+
     def test_exact_bytes_and_context_retained(self):
         self.publish()
         directory = Path(self.tmp.name) / "release-request"
