@@ -274,6 +274,23 @@ class RegistryReleaseTests(unittest.TestCase):
         self.assertLess(steps.index('Accept only build evidence from the artifact'),
                         steps.index('Sign explicit release intent'))
 
+    def test_build_evidence_size_matches_importer_limit(self):
+        self.publish()
+        directory = Path(self.tmp.name) / 'release-build-evidence'
+        directory.mkdir()
+        source = directory / 'build.sigstore.json'
+        code = python_step('Accept only build evidence from the artifact', 'publish')
+        destination = Path(self.tmp.name) / 'release-request/build.sigstore.json'
+        for size in (0, 4 * 1024 * 1024 + 1):
+            source.write_bytes(b'x' * size)
+            with patch.dict(os.environ, self.env), self.assertRaises(AssertionError):
+                exec(code, {})
+            self.assertFalse(destination.exists())
+        source.write_bytes(b'x' * (4 * 1024 * 1024))
+        with patch.dict(os.environ, self.env):
+            exec(code, {})
+        self.assertEqual(destination.stat().st_size, 4 * 1024 * 1024)
+
     def test_auto_rejects_mixed_and_incomplete_registry_inputs(self):
         script = step('release-auto.yml', 'Validate registry inputs', 'registry-inputs')['run']
         env = dict(os.environ, TARGET='production', DIGEST=self.digest, REGISTRY_ARTIFACT='',
