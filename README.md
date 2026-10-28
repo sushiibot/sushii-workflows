@@ -236,6 +236,29 @@ New registry callers must grant `packages: read` to the release job, even for bu
 The publisher uses this permission to read private OCI manifests when applicable.
 Legacy promotion callers retain their existing behavior. The registry approval contract follows.
 
+### Caller concurrency for registry releases
+
+An approval wait must not hold a workflow-wide lock shared by all `main` runs.
+That lock prevents newer commits from reaching tests, staging, or their own approval gate.
+Configure concurrency in the project caller; reusable workflows cannot override that lock:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.run_id || 'branch' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+```
+
+Each `main` run can progress independently. New PR commits cancel older runs on that PR.
+Do not enable workflow-wide cancellation on `main`: a new push could cancel a release
+that has already passed approval. The private importer serializes registry updates,
+and hosts serialize deployment work. The importer rejects requests for an old branch head.
+
+Older approval gates can remain visible in GitHub, but do not block newer runs.
+The Discord card selects the newer eligible pending run. Approval of an old run does
+not authorize deployment of stale source. This setting does not cancel old gates automatically.
+
+See [GitHub concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
 ### Approved registry releases
 
 Project checks still gate `build-verified.yml`. The release job receives its exact digest.
