@@ -1,0 +1,33 @@
+name: Release tools
+description: Trusted Python helpers for the shared release workflows
+inputs:
+  command:
+    description: Release helper to execute
+    required: true
+outputs:
+  deployed:
+    description: deployed returned by the selected helper
+    value: ${{ steps.run.outputs.deployed }}
+  image:
+    description: image returned by the selected helper
+    value: ${{ steps.run.outputs.image }}
+  tag:
+    description: tag returned by the selected helper
+    value: ${{ steps.run.outputs.tag }}
+  build_date:
+    description: build date returned by the selected helper
+    value: ${{ steps.run.outputs.build_date }}
+  image_version:
+    description: image version returned by the selected helper
+    value: ${{ steps.run.outputs.image_version }}
+  source_sha:
+    description: source sha returned by the selected helper
+    value: ${{ steps.run.outputs.source_sha }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        RELEASE_TOOL: ${{ inputs.command }}
+      run: python3 -I "$GITHUB_ACTION_PATH/run.py" "$RELEASE_TOOL"
