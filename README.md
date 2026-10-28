@@ -11,7 +11,8 @@ Three presets wrap the existing `pull-deploy.yml` deployment mechanism:
 - `release-promote.yml`: promote a successful staging run through the production approval gate.
 
 Projects own tests, triggers, and `needs` dependencies. These workflows do not define project checks.
-The automatic and staged presets accept only default-branch push events.
+The automatic and staged presets accept default-branch push events.
+The automatic preset can also accept explicit manual dispatch with `allow_manual: true`.
 The promotion preset accepts only manual dispatch events on the default branch.
 
 These presets are ready for a controlled pilot. No project caller or GitHub environment configuration changes accompany their implementation.
@@ -48,7 +49,7 @@ Replace `test` and `docker-build` with the actual project job IDs.
 release:
   needs: [test, docker-build]
   uses: sushiibot/sushii-workflows/.github/workflows/release-auto.yml@WORKFLOW_COMMIT_SHA
-  permissions: {contents: read, statuses: write}
+  permissions: {contents: read, actions: read, statuses: write}
   with:
     image_version: ${{ needs.docker-build.outputs.image_version }}
   secrets:
@@ -58,6 +59,20 @@ release:
 This job requires a successful build from the same push. It accepts a SHA tag that matches the source commit.
 Private repository ancestry checks require `contents: read`.
 An image appearing in the registry does not trigger deployment.
+
+### Approval without staging
+
+Use `release-auto.yml` with `environment: production` and `require_approval: true`.
+This preserves project checks and the build, then waits for production approval before deployment.
+Configure required reviewers first. Missing reviewers cause failure before any infrastructure write.
+The caller must grant `actions: read` for this configuration check.
+
+For existing manual publishers, set `allow_manual: true`.
+Manual dispatch remains restricted to the default branch and uses that run's exact source revision.
+This option does not select arbitrary historical versions or replace validated staging promotion.
+
+Optional `timeout_minutes` and `job_timeout_minutes` preserve service-specific deployment budgets.
+The job timeout must exceed the deployment timeout by at least five minutes.
 
 ### Staging followed by approval
 
@@ -82,7 +97,7 @@ For staging CI, use the automatic preset with staging placement and a receipt:
 release:
   needs: [test, docker-build]
   uses: sushiibot/sushii-workflows/.github/workflows/release-auto.yml@WORKFLOW_COMMIT_SHA
-  permissions: {contents: read, statuses: write}
+  permissions: {contents: read, actions: read, statuses: write}
   with:
     service: ${{ vars.STAGING_SERVICE }}
     host: ${{ vars.STAGING_HOST || 'apps' }}

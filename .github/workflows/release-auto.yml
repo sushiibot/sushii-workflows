@@ -1,4 +1,4 @@
-name: Automatic Release
+name: Release
 
 on:
   workflow_call:
@@ -18,10 +18,28 @@ on:
       environment:
         type: string
         default: ""
+      require_approval:
+        description: "Require reviewers on the selected environment before deployment"
+        type: boolean
+        default: false
+      allow_manual:
+        description: "Also accept an explicit workflow_dispatch on the default branch"
+        type: boolean
+        default: false
+      timeout_minutes:
+        type: number
+        default: 15
+      job_timeout_minutes:
+        type: number
+        default: 30
       receipt_name:
         description: "Set staging-release when this deployment can be promoted later"
         type: string
         default: ""
+    outputs:
+      deployed:
+        description: "True only after host success"
+        value: ${{ jobs.deploy.outputs.deployed }}
     secrets:
       SUSHII_CI_PRIVATE_KEY:
         required: true
@@ -29,8 +47,21 @@ on:
 permissions: {}
 
 jobs:
+  approval-config:
+    if: inputs.require_approval && (github.event_name == 'push' || (inputs.allow_manual && github.event_name == 'workflow_dispatch')) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      actions: read
+    uses: ./.github/workflows/_release-approval.yml
+    with:
+      production_environment: ${{ inputs.environment }}
+
   deploy:
-    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: approval-config
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'push' || (inputs.allow_manual && github.event_name == 'workflow_dispatch')) &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (needs.approval-config.result == 'success' || (!inputs.require_approval && needs.approval-config.result == 'skipped'))
     permissions:
       statuses: write
       contents: read
@@ -42,5 +73,7 @@ jobs:
       environment: ${{ inputs.environment }}
       receipt_name: ${{ inputs.receipt_name }}
       require_deploy_success: true
+      timeout_minutes: ${{ inputs.timeout_minutes }}
+      job_timeout_minutes: ${{ inputs.job_timeout_minutes }}
     secrets:
       SUSHII_CI_PRIVATE_KEY: ${{ secrets.SUSHII_CI_PRIVATE_KEY }}
